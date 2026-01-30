@@ -1,5 +1,6 @@
 """SQLite database storage for trading bot."""
 import sqlite3
+from pathlib import Path
 from typing import Dict, List, Optional
 from datetime import datetime, date, timedelta
 from loguru import logger
@@ -22,7 +23,9 @@ class StorageManager:
         logger.info(f"Storage manager initialized: {self.db_path}")
     
     def _init_database(self):
-        """Initialize database schema."""
+        """Initialize database schema. Ensures parent directory exists."""
+        db_path = Path(self.db_path)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         

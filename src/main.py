@@ -1,11 +1,12 @@
 """Main entry point for high-convexity portfolio trading bot."""
 import signal
 import sys
+import time
 from datetime import datetime, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
+
 from loguru import logger
-import schedule
-import time
 
 from src.config import config
 from src.client import TradingClient
@@ -56,6 +57,7 @@ class TradingBot:
         )
         
         self.running = False
+        self._last_rebalance_date: Optional[datetime] = None  # date (in config TZ) we last ran
         logger.info("Trading bot initialized")
     
     def check_kill_switch(self) -> bool:
@@ -176,34 +178,44 @@ class TradingBot:
         except Exception as e:
             logger.error(f"Error in daily logic: {e}", exc_info=True)
     
-    def start(self):
-        """Start the trading bot."""
-        self.running = True
-        
-        # Schedule daily rebalancing
-        rebalance_time = f"{config.rebalance_time_hour:02d}:{config.rebalance_time_minute:02d}"
-        schedule.every().day.at(rebalance_time).do(self.run_daily_logic)
-        
-        logger.info(f"Scheduled daily rebalancing at {rebalance_time} {config.rebalance_timezone}")
-        
-        # Run initial logic if it's past rebalance time
-        now = datetime.now()
-        rebalance_datetime = now.replace(
+    def _should_run_rebalance_now(self) -> bool:
+        """Return True if current time in configured timezone is at or past rebalance time and we haven't run today."""
+        tz = ZoneInfo(config.rebalance_timezone)
+        now_tz = datetime.now(tz)
+        today = now_tz.date()
+        rebalance_today = now_tz.replace(
             hour=config.rebalance_time_hour,
             minute=config.rebalance_time_minute,
             second=0,
-            microsecond=0
+            microsecond=0,
         )
-        
-        if now >= rebalance_datetime:
-            logger.info("Running initial logic (past rebalance time)")
+        if now_tz < rebalance_today:
+            return False
+        if self._last_rebalance_date is None or self._last_rebalance_date.date() < today:
+            return True
+        return False
+
+    def start(self):
+        """Start the trading bot."""
+        self.running = True
+        tz = ZoneInfo(config.rebalance_timezone)
+        rebalance_time = f"{config.rebalance_time_hour:02d}:{config.rebalance_time_minute:02d}"
+        logger.info(
+            f"Scheduled daily rebalancing at {rebalance_time} {config.rebalance_timezone}"
+        )
+
+        # Run immediately if already past rebalance time today (in configured TZ)
+        if self._should_run_rebalance_now():
+            self._last_rebalance_date = datetime.now(tz)
+            logger.info("Running initial logic (past rebalance time in configured timezone)")
             self.run_daily_logic()
-        
-        # Main loop
+
         logger.info("Bot is running. Press Ctrl+C to stop.")
-        
+
         while self.running:
-            schedule.run_pending()
+            if self._should_run_rebalance_now():
+                self._last_rebalance_date = datetime.now(tz)
+                self.run_daily_logic()
             time.sleep(60)  # Check every minute
     
     def stop(self):
