@@ -7,8 +7,9 @@ from loguru import logger
 from public_api_sdk import PublicApiClient, PublicApiClientConfiguration
 from public_api_sdk.auth_config import ApiKeyAuthConfig
 
-
-CONFIG_FILE = Path("data/bot_config.json")
+# Resolve relative to package (src/utils/) so project root is parent of src
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+CONFIG_FILE = _PROJECT_ROOT / "data" / "bot_config.json"
 
 
 class AccountManager:

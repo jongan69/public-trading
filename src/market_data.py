@@ -226,10 +226,16 @@ class MarketDataManager:
             else:
                 greeks_response = self.client.client.get_option_greeks(osi_symbols)
                 result = {}
-                for greek_data in greeks_response.greeks:
-                    # Extract OSI symbol from response
-                    # Note: Adjust based on actual SDK response structure
-                    result[osi_symbols[0]] = {  # Placeholder - adjust based on SDK
+                for i, greek_data in enumerate(greeks_response.greeks):
+                    # Use symbol from response if present, else same order as osi_symbols
+                    symbol = getattr(greek_data, "osi_symbol", None) or getattr(
+                        greek_data, "symbol", None
+                    )
+                    if symbol is None and i < len(osi_symbols):
+                        symbol = osi_symbols[i]
+                    if symbol is None:
+                        continue
+                    result[symbol] = {
                         "delta": float(greek_data.greeks.delta),
                         "gamma": float(greek_data.greeks.gamma),
                         "theta": float(greek_data.greeks.theta),

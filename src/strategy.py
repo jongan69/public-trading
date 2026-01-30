@@ -170,11 +170,11 @@ class HighConvexityStrategy:
         new_contract_price = new_contract["mid"]
         roll_debit = new_contract_price - current_price
         
-        # Check roll cost limits
+        # Check roll cost limits: reject if EITHER limit is exceeded
         max_roll_debit_pct = current_value * config.max_roll_debit_pct
         max_roll_debit_absolute = config.max_roll_debit_absolute
         
-        if roll_debit > max_roll_debit_pct and roll_debit > max_roll_debit_absolute:
+        if roll_debit > max_roll_debit_pct or roll_debit > max_roll_debit_absolute:
             logger.info(f"Roll cost too high for {position.symbol}: ${roll_debit:.2f}")
             return (False, None)
         
@@ -190,19 +190,19 @@ class HighConvexityStrategy:
         allocations = self.portfolio.get_current_allocations()
         moonshot_pct = allocations["moonshot"]
         
-        # Trim if moonshot exceeds 35% of portfolio value
-        if moonshot_pct > 0.35:
+        # Trim if moonshot exceeds configured hard cap (moonshot_max)
+        if moonshot_pct > config.moonshot_max:
             themes = self.portfolio.get_positions_by_theme()
             moonshot_positions = themes["moonshot"]
             
             if moonshot_positions:
-                # Calculate trim quantity to bring moonshot to exactly 35% of portfolio
+                # Calculate trim quantity to bring moonshot to configured cap
                 total_value = sum(
                     pos.get_market_value(self.portfolio.get_position_price(pos))
                     for pos in moonshot_positions
                 )
                 
-                max_value = equity * 0.35  # 35% cap
+                max_value = equity * config.moonshot_max
                 trim_value = total_value - max_value
                 
                 # Trim proportionally across positions
@@ -213,7 +213,7 @@ class HighConvexityStrategy:
                         logger.warning(f"No price for moonshot trim {position.symbol}, skipping")
                         continue
                     trim_pct = trim_value / total_value if total_value > 0 else 0
-                    # Shares to sell to bring moonshot to 35% of portfolio value
+                    # Shares to sell to bring moonshot to moonshot_max
                     trim_qty = min(int(position.quantity * trim_pct), position.quantity)
                     if trim_qty <= 0:
                         continue
