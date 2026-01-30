@@ -138,3 +138,37 @@ def test_select_option_contract_no_suitable(market_data_manager, mock_client):
     
     result = market_data_manager.select_option_contract("AAPL", 150.0)
     assert result is None
+
+
+def test_compute_max_pain():
+    """Test max pain: strike that minimizes total option holder value at expiration."""
+    chain = Mock(spec=OptionChainResponse)
+    # Calls: K=100 OI=100, K=110 OI=50. Puts: K=90 OI=100, K=100 OI=50.
+    # At S=90: calls 0, puts (100-90)*100*50 = 50000 -> total 50000
+    # At S=100: calls 0, puts (90-100)*...=0 and (100-100)*...=0 -> total 0
+    # At S=110: calls (110-100)*100*100 = 100000, puts 0 -> total 100000
+    # So max pain = 100 (min total = 0)
+    class Contract:
+        def __init__(self, strike, oi):
+            self.strike = strike
+            self.open_interest = oi
+    chain.calls = [Contract(100, 100), Contract(110, 50)]
+    chain.puts = [Contract(90, 100), Contract(100, 50)]
+    result = MarketDataManager.compute_max_pain(chain)
+    assert result is not None
+    strike, total = result
+    assert strike == 100.0
+    assert total == 0.0
+
+
+def test_compute_max_pain_no_oi_returns_none():
+    """Test max pain returns None when all OI is zero."""
+    chain = Mock(spec=OptionChainResponse)
+    class Contract:
+        def __init__(self, strike):
+            self.strike = strike
+            self.open_interest = 0
+    chain.calls = [Contract(100)]
+    chain.puts = [Contract(90)]
+    result = MarketDataManager.compute_max_pain(chain)
+    assert result is None

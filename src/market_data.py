@@ -204,6 +204,60 @@ class MarketDataManager:
                 f"expiring {expiration_date}: {e}"
             )
             return None
+
+    @staticmethod
+    def compute_max_pain(chain: OptionChainResponse) -> Optional[Tuple[float, float]]:
+        """Compute max pain strike from option chain (open interest–weighted).
+        
+        Max pain is the strike at which total option holder value at expiration is minimized
+        (i.e. maximum pain for holders / maximum gain for writers). Uses OI * 100 per contract.
+        
+        Returns:
+            (max_pain_strike, total_value_at_max_pain) or None if no OI data.
+        """
+        calls = getattr(chain, "calls", []) or []
+        puts = getattr(chain, "puts", []) or []
+        strikes_set = set()
+        # (strike, oi) for calls and puts
+        call_data: List[Tuple[float, int]] = []
+        put_data: List[Tuple[float, int]] = []
+        for c in calls:
+            strike = getattr(c, "strike", None)
+            if strike is None:
+                continue
+            k = float(strike)
+            strikes_set.add(k)
+            oi = getattr(c, "open_interest", None)
+            oi = int(oi) if oi is not None else 0
+            call_data.append((k, oi))
+        for p in puts:
+            strike = getattr(p, "strike", None)
+            if strike is None:
+                continue
+            k = float(strike)
+            strikes_set.add(k)
+            oi = getattr(p, "open_interest", None)
+            oi = int(oi) if oi is not None else 0
+            put_data.append((k, oi))
+        if not strikes_set:
+            return None
+        # If no OI anywhere, all totals are 0 -> arbitrary; skip.
+        if not call_data and not put_data:
+            return None
+        if all(oi == 0 for _, oi in call_data) and all(oi == 0 for _, oi in put_data):
+            return None
+        best_strike = None
+        best_total = float("inf")
+        for S in sorted(strikes_set):
+            call_value = sum(max(0.0, S - K) * 100 * oi for K, oi in call_data)
+            put_value = sum(max(0.0, K - S) * 100 * oi for K, oi in put_data)
+            total = call_value + put_value
+            if total < best_total:
+                best_total = total
+                best_strike = S
+        if best_strike is None:
+            return None
+        return (best_strike, best_total)
     
     def get_option_greeks(self, osi_symbols: List[str]) -> Dict[str, Dict]:
         """Get Greeks for multiple option contracts.
@@ -301,6 +355,12 @@ class MarketDataManager:
                 target_min = underlying_price * config.strike_range_min
                 target_max = underlying_price * config.strike_range_max
                 
+                max_pain_strike = None
+                if config.use_max_pain_for_selection:
+                    max_pain_result = self.compute_max_pain(chain)
+                    if max_pain_result is not None:
+                        max_pain_strike, _ = max_pain_result
+                
                 best_contract = None
                 best_strike_diff = float('inf')
                 
@@ -335,8 +395,11 @@ class MarketDataManager:
                     if volume is not None and volume < config.min_volume:
                         continue
                     
-                    # Select strike closest to ATM
-                    strike_diff = abs(strike - underlying_price)
+                    # Strategic pick: prefer strike closest to max pain when enabled, else closest to ATM
+                    if max_pain_strike is not None:
+                        strike_diff = abs(strike - max_pain_strike)
+                    else:
+                        strike_diff = abs(strike - underlying_price)
                     if strike_diff < best_strike_diff:
                         best_strike_diff = strike_diff
                         best_contract = call

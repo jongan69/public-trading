@@ -211,6 +211,7 @@ All configuration is managed through environment variables in `.env`. Values bel
 - `STRIKE_RANGE_MIN`, `STRIKE_RANGE_MAX`: Strike multiplier vs spot (defaults: 1.00, 1.10)
 - `MAX_BID_ASK_SPREAD_PCT`: Max bid-ask spread (default: 0.12)
 - `MIN_OPEN_INTEREST`, `MIN_VOLUME`: Liquidity filters (defaults: 50, 10)
+- `USE_MAX_PAIN_FOR_SELECTION`: When true, automated option selection prefers the strike closest to max pain within the allowed range (default: true). Options chain data in the Telegram bot includes max pain for informed strategic picks.
 
 ### Roll Rules
 - `ROLL_TRIGGER_DTE`: Roll when DTE below this (default: 60)

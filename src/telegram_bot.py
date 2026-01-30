@@ -111,7 +111,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_option_expirations",
-            "description": "Get available option expiration dates for any underlying symbol (e.g. AAPL, TSLA, UMC). Use when user asks about expirations or which dates are available for options on a stock.",
+            "description": "Get all available option expiration dates for any underlying symbol (e.g. AAPL, TSLA, UMC). Returns every expiration date the API provides. Use when user asks about expirations or which dates are available for options on a stock.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -125,7 +125,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_options_chain",
-            "description": "Get option chain (calls and puts) for any underlying ticker (e.g. AAPL, TSLA, UMC, NVDA)—not limited to theme symbols. Returns spot, and per contract: strike, symbol (use for place_manual_trade), bid, ask, mid, OI, vol. Use when user asks about options for any symbol. If no expiration given, uses nearest expiration. Always call before recommending an option trade.",
+            "description": "Get complete option chain (all calls and all puts) for any underlying ticker (e.g. AAPL, TSLA, UMC, NVDA)—not limited to theme symbols. Returns spot, max pain (strike at which option holder value at expiration is minimized—often a price magnet), and per contract: strike, symbol (use for place_manual_trade), bid, ask, mid, OI, vol. Use max pain for informed strategic picks: e.g. selling premium near max pain, expecting pin risk, or bullish above / bearish below. If no expiration given, uses nearest expiration. Always call before recommending an option trade.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -202,7 +202,7 @@ SYSTEM_PROMPT = """You are an AI assistant for a high-convexity options/equity t
 
 You are fully capable of:
 1) **Conversation about market news and assets**: Use get_market_news(symbol_or_topic) for current headlines. Discuss earnings, sectors, Fed, macro, or any ticker.
-2) **Options chains**: Use get_option_expirations and get_options_chain for **any** underlying ticker (not just theme symbols)—e.g. AAPL, TSLA, UMC, NVDA. Discuss strikes, bid/ask, liquidity, and build options strategies for whatever symbol the user asks about.
+2) **Options chains**: Use get_option_expirations and get_options_chain for **any** underlying ticker (not just theme symbols)—e.g. AAPL, TSLA, UMC, NVDA. The chain includes **max pain** (strike at which option holder value at expiration is minimized—often a price magnet). Use max pain for informed strategic picks: e.g. selling premium near max pain, expecting pin risk, bullish above / bearish below. Discuss strikes, bid/ask, liquidity, and build options strategies accordingly.
 3) **Polymarket prediction odds**: Use get_polymarket_odds(topic) to fetch prediction-market probabilities (e.g. Fed rate, elections, Bitcoin). Factor these into options or market context when relevant—e.g. "Polymarket says 70% chance X; that could support/hurt this option thesis."
 4) **Images — turn ANY image into a trading strategy**: You have vision. The user can send any image (chart, photo, meme, art, screenshot, random picture). Your job: (a) interpret it creatively and derive a trading strategy from it—themes, risk profile, allocation split, option rules, or concrete trades—regardless of whether the image is "about" finance; (b) summarize the strategy in plain language; (c) implement it when it makes sense using update_allocation_targets, update_option_rules, update_theme_symbols, place_manual_trade, or run_daily_logic_*. Map what you see (metaphors, structure, numbers, mood) to allocations (%), DTE/strike rules, theme symbols, or orders. E.g. a skateboard image → momentum + obstacles → "momentum themes 40%, defensive 30%, cash 30%" and apply. Never say the image is irrelevant—always derive a strategy from it.
 5) **Building custom strategies through conversation**: Use update_allocation_targets, update_option_rules, and update_theme_symbols. Only provide params the user asked to change.
@@ -214,7 +214,7 @@ You also have: get_portfolio, get_allocations, run_daily_logic_preview, run_dail
 
 Be conversational and helpful. For trades, confirm and summarize. Never make up portfolio, chain, or Polymarket data—use the tools.
 
-**Option trade accuracy:** (1) Always call get_options_chain (and get_option_expirations if needed) in the same turn before recommending any option trade. Never use prices, strikes, or symbols from memory or a previous message. (2) In your recommendation, quote only numbers that appear in the tool output (spot, bid, ask, mid). State explicitly that the data is from the options chain just fetched (e.g. \"Data from options chain fetched for this recommendation\"). (3) When suggesting a limit price, use the ask from the chain and say \"limit at current ask $X (from chain)\" or similar. (4) When the user confirms and you call place_manual_trade: use the exact option symbol from the get_options_chain output (the symbol= value for that strike/expiration). Never fabricate or guess option symbols. If the user confirms long after the recommendation, call get_options_chain again to get fresh bid/ask and the exact symbol before placing.
+**Option trade accuracy:** (1) Always call get_options_chain (and get_option_expirations if needed) in the same turn before recommending any option trade. Never use prices, strikes, or symbols from memory or a previous message. (2) In your recommendation, quote only numbers that appear in the tool output (spot, max pain if present, bid, ask, mid). Use max pain when relevant—e.g. "max pain at $X; consider selling calls there" or "above max pain, bullish bias." State explicitly that the data is from the options chain just fetched. (3) When suggesting a limit price, use the ask from the chain and say \"limit at current ask $X (from chain)\" or similar. (4) When the user confirms and you call place_manual_trade: use the exact option symbol from the get_options_chain output (the symbol= value for that strike/expiration). Never fabricate or guess option symbols. If the user confirms long after the recommendation, call get_options_chain again to get fresh bid/ask and the exact symbol before placing.
 
 When the user asks for research or deep analysis: call get_market_news, get_polymarket_odds, get_options_chain (and get_portfolio/get_allocations if relevant), then synthesize one answer. When a message includes an image: (1) analyze it, (2) turn it into a trading strategy regardless of context—derive themes, allocations, rules, or trades from whatever you see, (3) implement via tools and summarize. Any image can become a strategy; you are allowed to make trades and set strategy from any image.
 
@@ -556,8 +556,9 @@ def run_tool(tool_name: str, arguments: Dict[str, Any], bot_instance: TradingBot
                 if not expirations:
                     return f"No option expirations found for {underlying}."
                 today = date.today()
-                lines = [f"Option expirations for {underlying} (next 12):"]
-                for exp in sorted(expirations)[:12]:
+                sorted_exps = sorted(expirations)
+                lines = [f"Option expirations for {underlying} ({len(sorted_exps)} available):"]
+                for exp in sorted_exps:
                     dte = (exp - today).days
                     lines.append(f"  {exp.isoformat()}  (DTE {dte})")
                 return "\n".join(lines)
@@ -597,11 +598,15 @@ def run_tool(tool_name: str, arguments: Dict[str, Any], bot_instance: TradingBot
                     f"Options chain {underlying} exp {expiration_date} (spot ${spot:.2f}):",
                     "Use the 'symbol' value from a row when calling place_manual_trade for that contract.",
                 ]
+                max_pain_result = dm.compute_max_pain(chain)
+                if max_pain_result is not None and isinstance(max_pain_result, (tuple, list)) and len(max_pain_result) >= 2:
+                    max_pain_strike, _ = max_pain_result
+                    lines.append(f"Max pain: ${max_pain_strike:.2f} (strike at which option holder value at expiration is minimized; often a price magnet—use for strategic picks, e.g. selling premium near it or expecting pin risk).")
                 for label, contracts in [("CALLS", getattr(chain, "calls", []) or []), ("PUTS", getattr(chain, "puts", []) or [])]:
                     if not contracts:
                         continue
                     lines.append(f"  {label}:")
-                    for c in contracts[:25]:
+                    for c in contracts:
                         inst = getattr(c, "instrument", None)
                         sym = (getattr(inst, "symbol", "") or "").strip() if inst else (getattr(c, "symbol", "") or "")
                         strike = getattr(c, "strike", None)

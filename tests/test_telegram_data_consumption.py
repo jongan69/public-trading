@@ -69,6 +69,7 @@ def mock_bot_for_options():
     dm.get_option_expirations.return_value = []
     dm.get_option_chain.return_value = chain
     dm.get_quote.return_value = 10.13
+    dm.compute_max_pain.return_value = None  # optional; bot handles None
 
     # Make get_option_expirations return a list of dates so chain is used
     from datetime import date, timedelta
@@ -116,6 +117,7 @@ def test_run_tool_get_options_chain_handles_string_bid_ask():
     dm.get_option_expirations.return_value = [date.today() + timedelta(days=30)]
     dm.get_option_chain.return_value = chain
     dm.get_quote.return_value = "10.13"
+    dm.compute_max_pain.return_value = None
 
     result = run_tool(
         "get_options_chain",

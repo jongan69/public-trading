@@ -50,6 +50,7 @@ class HighConvexityConfig(BaseSettings):
     max_bid_ask_spread_pct: float = Field(0.12, env="MAX_BID_ASK_SPREAD_PCT")  # 12%
     min_open_interest: int = Field(50, env="MIN_OPEN_INTEREST")
     min_volume: int = Field(10, env="MIN_VOLUME")
+    use_max_pain_for_selection: bool = Field(True, env="USE_MAX_PAIN_FOR_SELECTION")
     
     # Roll Rules
     roll_trigger_dte: int = Field(60, env="ROLL_TRIGGER_DTE")
