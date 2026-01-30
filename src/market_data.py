@@ -1,0 +1,366 @@
+"""Market data retrieval and management."""
+import re
+from typing import List, Dict, Optional, Tuple
+from datetime import datetime, date
+from loguru import logger
+
+from public_api_sdk import (
+    OrderInstrument,
+    InstrumentType,
+    OptionExpirationsRequest,
+    OptionChainRequest,
+    OptionChainResponse,
+    OptionExpirationsResponse,
+)
+
+from src.client import TradingClient
+from src.config import config
+
+
+class MarketDataManager:
+    """Manages market data retrieval including quotes, option chains, and Greeks."""
+    
+    def __init__(self, client: TradingClient):
+        """Initialize the market data manager.
+        
+        Args:
+            client: Trading client instance
+        """
+        self.client = client
+        self._quote_cache: Dict[str, float] = {}
+        logger.info("Market data manager initialized")
+    
+    def get_quotes(self, symbols: List[str], instrument_type: InstrumentType = InstrumentType.EQUITY) -> Dict[str, float]:
+        """Get current quotes for multiple symbols.
+        
+        Args:
+            symbols: List of symbols to get quotes for
+            instrument_type: Type of instrument (default: EQUITY)
+            
+        Returns:
+            Dictionary mapping symbol to last price
+        """
+        try:
+            instruments = [
+                OrderInstrument(symbol=symbol, type=instrument_type)
+                for symbol in symbols
+            ]
+            
+            quotes = self.client.client.get_quotes(instruments)
+            
+            result = {}
+            for quote in quotes:
+                symbol = quote.instrument.symbol
+                # last can be None for illiquid options, crypto, or no recent trade
+                price = quote.last
+                if price is None:
+                    # Fallback to bid/ask mid when last is missing
+                    bid = getattr(quote, "bid", None)
+                    ask = getattr(quote, "ask", None)
+                    if bid is not None and ask is not None:
+                        try:
+                            price = (float(bid) + float(ask)) / 2
+                        except (TypeError, ValueError):
+                            price = None
+                    else:
+                        price = None
+                else:
+                    try:
+                        price = float(price)
+                    except (TypeError, ValueError):
+                        price = None
+                if price is not None:
+                    result[symbol] = price
+                    self._quote_cache[symbol] = price
+                else:
+                    result[symbol] = None
+                    logger.debug(f"No price for {symbol} (last/bid/ask missing)")
+            
+            logger.debug(f"Retrieved quotes for {len([v for v in result.values() if v is not None])} symbols")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error retrieving quotes: {e}")
+            raise
+    
+    def get_quote(self, symbol: str, instrument_type: InstrumentType = InstrumentType.EQUITY) -> Optional[float]:
+        """Get current quote for a single symbol.
+        
+        Args:
+            symbol: Symbol to get quote for
+            instrument_type: Type of instrument (default: EQUITY)
+            
+        Returns:
+            Last price or None if error
+        """
+        try:
+            quotes = self.get_quotes([symbol], instrument_type)
+            return quotes.get(symbol)
+        except Exception as e:
+            logger.error(f"Error retrieving quote for {symbol}: {e}")
+            return None
+
+    def get_quote_bid_ask(
+        self, symbol: str, instrument_type: InstrumentType = InstrumentType.EQUITY
+    ) -> Optional[Dict[str, float]]:
+        """Get bid, ask, and mid for a symbol (for option sell/buy limit pricing).
+        
+        Args:
+            symbol: Symbol to get quote for
+            instrument_type: Type of instrument (default: EQUITY)
+            
+        Returns:
+            Dict with keys bid, ask, mid (and last if available), or None if unavailable
+        """
+        try:
+            api_symbol = re.sub(r"-OPTION$", "", str(symbol)).strip() if instrument_type == InstrumentType.OPTION else symbol
+            instruments = [OrderInstrument(symbol=api_symbol, type=instrument_type)]
+            quotes = self.client.client.get_quotes(instruments)
+            if not quotes:
+                return None
+            quote = quotes[0]
+            bid = float(quote.bid) if quote.bid is not None else None
+            ask = float(quote.ask) if quote.ask is not None else None
+            last = float(quote.last) if quote.last is not None else None
+            if bid is None and ask is None:
+                return {"bid": last, "ask": last, "mid": last, "last": last} if last is not None else None
+            bid = bid if bid is not None else (ask if ask is not None else last)
+            ask = ask if ask is not None else (bid if bid is not None else last)
+            mid = (bid + ask) / 2.0 if (bid is not None and ask is not None) else (bid or ask)
+            return {"bid": bid, "ask": ask, "mid": mid, "last": last}
+        except Exception as e:
+            logger.debug(f"Error getting bid/ask for {symbol}: {e}")
+            return None
+    
+    def get_option_expirations(
+        self, 
+        underlying_symbol: str,
+        underlying_type: InstrumentType = InstrumentType.EQUITY
+    ) -> List[date]:
+        """Get available option expiration dates for an underlying.
+        
+        Args:
+            underlying_symbol: Underlying symbol
+            underlying_type: Type of underlying instrument
+            
+        Returns:
+            List of expiration dates
+        """
+        try:
+            request = OptionExpirationsRequest(
+                instrument=OrderInstrument(
+                    symbol=underlying_symbol,
+                    type=underlying_type
+                )
+            )
+            
+            response: OptionExpirationsResponse = self.client.client.get_option_expirations(request)
+            expirations = [datetime.fromisoformat(exp).date() for exp in response.expirations]
+            
+            logger.debug(f"Retrieved {len(expirations)} expirations for {underlying_symbol}")
+            return expirations
+            
+        except Exception as e:
+            logger.error(f"Error retrieving expirations for {underlying_symbol}: {e}")
+            return []
+    
+    def get_option_chain(
+        self,
+        underlying_symbol: str,
+        expiration_date: date,
+        underlying_type: InstrumentType = InstrumentType.EQUITY
+    ) -> Optional[OptionChainResponse]:
+        """Get option chain for a specific expiration.
+        
+        Args:
+            underlying_symbol: Underlying symbol
+            expiration_date: Expiration date
+            underlying_type: Type of underlying instrument
+            
+        Returns:
+            Option chain response or None if error
+        """
+        try:
+            expiration_str = expiration_date.isoformat()
+            
+            request = OptionChainRequest(
+                instrument=OrderInstrument(
+                    symbol=underlying_symbol,
+                    type=underlying_type
+                ),
+                expiration_date=expiration_str
+            )
+            
+            chain = self.client.client.get_option_chain(request)
+            logger.debug(
+                f"Retrieved option chain for {underlying_symbol} "
+                f"expiring {expiration_str}: {len(chain.calls)} calls"
+            )
+            return chain
+            
+        except Exception as e:
+            logger.error(
+                f"Error retrieving option chain for {underlying_symbol} "
+                f"expiring {expiration_date}: {e}"
+            )
+            return None
+    
+    def get_option_greeks(self, osi_symbols: List[str]) -> Dict[str, Dict]:
+        """Get Greeks for multiple option contracts.
+        
+        Args:
+            osi_symbols: List of OSI format option symbols
+            
+        Returns:
+            Dictionary mapping OSI symbol to Greeks dict
+        """
+        try:
+            if len(osi_symbols) == 1:
+                greek_response = self.client.client.get_option_greek(osi_symbols[0])
+                return {osi_symbols[0]: {
+                    "delta": float(greek_response.greeks.delta),
+                    "gamma": float(greek_response.greeks.gamma),
+                    "theta": float(greek_response.greeks.theta),
+                    "vega": float(greek_response.greeks.vega),
+                }}
+            else:
+                greeks_response = self.client.client.get_option_greeks(osi_symbols)
+                result = {}
+                for greek_data in greeks_response.greeks:
+                    # Extract OSI symbol from response
+                    # Note: Adjust based on actual SDK response structure
+                    result[osi_symbols[0]] = {  # Placeholder - adjust based on SDK
+                        "delta": float(greek_data.greeks.delta),
+                        "gamma": float(greek_data.greeks.gamma),
+                        "theta": float(greek_data.greeks.theta),
+                        "vega": float(greek_data.greeks.vega),
+                    }
+                return result
+                
+        except Exception as e:
+            logger.error(f"Error retrieving Greeks: {e}")
+            return {}
+    
+    def select_option_contract(
+        self,
+        underlying_symbol: str,
+        underlying_price: float,
+        underlying_type: InstrumentType = InstrumentType.EQUITY
+    ) -> Optional[Dict]:
+        """Select an option contract based on selection rules.
+        
+        Args:
+            underlying_symbol: Underlying symbol
+            underlying_price: Current underlying price
+            underlying_type: Type of underlying instrument
+            
+        Returns:
+            Dictionary with contract details including OSI symbol, or None if no valid contract
+        """
+        try:
+            # Get expirations
+            expirations = self.get_option_expirations(underlying_symbol, underlying_type)
+            if not expirations:
+                logger.warning(f"No expirations found for {underlying_symbol}")
+                return None
+            
+            # Filter expirations by DTE
+            today = date.today()
+            target_expirations = [
+                exp for exp in expirations
+                if config.option_dte_min <= (exp - today).days <= config.option_dte_max
+            ]
+            
+            # Fallback to wider range if needed
+            if not target_expirations:
+                target_expirations = [
+                    exp for exp in expirations
+                    if config.option_dte_fallback_min <= (exp - today).days <= config.option_dte_fallback_max
+                ]
+            
+            if not target_expirations:
+                logger.warning(f"No suitable expirations found for {underlying_symbol}")
+                return None
+            
+            # Try expirations in order
+            for expiration in sorted(target_expirations):
+                chain = self.get_option_chain(underlying_symbol, expiration, underlying_type)
+                if not chain:
+                    continue
+                
+                # Filter CALLs only
+                calls = chain.calls if hasattr(chain, 'calls') else []
+                
+                # Find strike closest to target range (spot * 1.00 to 1.10)
+                target_min = underlying_price * config.strike_range_min
+                target_max = underlying_price * config.strike_range_max
+                
+                best_contract = None
+                best_strike_diff = float('inf')
+                
+                for call in calls:
+                    if getattr(call, "strike", None) is None:
+                        continue
+                    strike = float(call.strike)
+                    
+                    # Check if strike is in range
+                    if strike < target_min or strike > target_max:
+                        continue
+                    
+                    # Liquidity filters
+                    bid = float(call.bid) if call.bid else None
+                    ask = float(call.ask) if call.ask else None
+                    
+                    if bid is None or ask is None:
+                        continue
+                    
+                    mid = (bid + ask) / 2
+                    spread_pct = (ask - bid) / mid if mid > 0 else float('inf')
+                    
+                    if spread_pct > config.max_bid_ask_spread_pct:
+                        continue
+                    
+                    # Check OI and volume if available
+                    oi = int(call.open_interest) if hasattr(call, 'open_interest') and call.open_interest else None
+                    volume = int(call.volume) if hasattr(call, 'volume') and call.volume else None
+                    
+                    if oi is not None and oi < config.min_open_interest:
+                        continue
+                    if volume is not None and volume < config.min_volume:
+                        continue
+                    
+                    # Select strike closest to ATM
+                    strike_diff = abs(strike - underlying_price)
+                    if strike_diff < best_strike_diff:
+                        best_strike_diff = strike_diff
+                        best_contract = call
+                
+                if best_contract:
+                    osi_symbol = best_contract.symbol if hasattr(best_contract, "symbol") else None
+                    bid = getattr(best_contract, "bid", None)
+                    ask = getattr(best_contract, "ask", None)
+                    strike_val = getattr(best_contract, "strike", None)
+                    if osi_symbol and bid is not None and ask is not None and strike_val is not None:
+                        return {
+                            "osi_symbol": osi_symbol,
+                            "underlying": underlying_symbol,
+                            "expiration": expiration.isoformat(),
+                            "strike": float(strike_val),
+                            "bid": float(bid),
+                            "ask": float(ask),
+                            "mid": (float(bid) + float(ask)) / 2,
+                            "open_interest": int(best_contract.open_interest) if getattr(best_contract, "open_interest", None) else None,
+                            "volume": int(best_contract.volume) if getattr(best_contract, "volume", None) else None,
+                        }
+            
+            logger.warning(f"No suitable option contract found for {underlying_symbol}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error selecting option contract for {underlying_symbol}: {e}")
+            return None
+    
+    def clear_cache(self):
+        """Clear the quote cache."""
+        self._quote_cache.clear()
+        logger.debug("Quote cache cleared")

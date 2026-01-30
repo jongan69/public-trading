@@ -17,7 +17,7 @@ The bot maintains a high-convexity portfolio with:
 
 ```
 src/
-├── config.py          # Configuration management
+├── config.py          # Configuration management (env vars)
 ├── client.py          # PublicApiClient wrapper
 ├── market_data.py     # Quotes, chains, Greeks, expirations
 ├── portfolio.py       # Allocation math and position tracking
@@ -27,7 +27,8 @@ src/
 ├── main.py            # Scheduler and run loop
 ├── telegram_bot.py    # Telegram + AI chat (portfolio, trades, strategy)
 └── utils/
-    └── logger.py      # Logging configuration
+    ├── logger.py      # Logging configuration
+    └── account_manager.py  # Account selection and data/bot_config.json
 ```
 
 ## Features
@@ -66,6 +67,8 @@ src/
 
 ## Installation
 
+Run all commands from the **project root** (the directory containing `.env` and `src/`).
+
 1. **Create virtual environment**:
 
 ```bash
@@ -90,11 +93,13 @@ cp .env.example .env
 Required settings:
 - `PUBLIC_SECRET_KEY`: Your Public.com API secret key
 
-**Note**: Account number will be selected interactively on first run and saved locally in `data/bot_config.json` for future use.
+**Note**: Account number is selected interactively on first run and saved in `data/bot_config.json` for future runs.
 
 ## Usage
 
 ### Running the Bot (scheduled rebalance)
+
+From project root:
 
 ```bash
 python -m src.main
@@ -103,8 +108,7 @@ python -m src.main
 Or:
 
 ```bash
-cd src
-python main.py
+python run.py
 ```
 
 ### Telegram + AI Bot
@@ -116,7 +120,7 @@ Talk to the bot in natural language over Telegram for portfolio, trades, strateg
    - `TELEGRAM_BOT_TOKEN=...`
    - `OPENAI_API_KEY=...` (for AI understanding)
    - `ALLOWED_TELEGRAM_USER_IDS=123456789` (optional; comma-separated user IDs allowed to execute trades; leave empty to allow all for read-only)
-3. Run:
+3. From project root, run:
 
 ```bash
 python run_telegram.py
@@ -151,80 +155,110 @@ python -m src.main
 
 ### Manual Execution
 
-You can also import and use components programmatically:
+You can import and use components programmatically. Run from project root so `.env` and `data/` resolve correctly. `TradingClient` requires an `account_number`; use `AccountManager.get_saved_account()` or prompt interactively.
 
 ```python
+from src.utils.account_manager import AccountManager
+from src.config import config
 from src.client import TradingClient
 from src.market_data import MarketDataManager
 from src.portfolio import PortfolioManager
 from src.execution import ExecutionManager
 from src.strategy import HighConvexityStrategy
 
+# Account: use saved or select interactively
+account = AccountManager.get_saved_account()
+if not account:
+    account = AccountManager.select_account_interactive(config.api_secret_key)
+if not account:
+    raise SystemExit("No account selected")
+
 # Initialize components
-client = TradingClient()
+client = TradingClient(account_number=account)
 data_manager = MarketDataManager(client)
 portfolio_manager = PortfolioManager(client, data_manager)
 execution_manager = ExecutionManager(client, portfolio_manager)
 strategy = HighConvexityStrategy(portfolio_manager, data_manager, execution_manager)
 
-# Run daily logic
+# Run daily logic (returns list of order dicts: action, symbol, quantity, price)
 orders = strategy.run_daily_logic()
 
-# Execute orders
-for order in orders:
-    result = execution_manager.execute_order(order)
+# Execute orders (each returns result dict or None)
+for order_details in orders:
+    result = execution_manager.execute_order(order_details)
     print(result)
 ```
 
+For full behavior (kill switch, storage, scheduling), use `TradingBot` from `src.main` or run `python run.py`.
+
 ## Configuration
 
-All configuration is managed through environment variables in `.env`:
+All configuration is managed through environment variables in `.env`. Values below match `src/config.py` and `.env.example`.
 
 ### Strategy Universe
 - `THEME_UNDERLYINGS`: Comma-separated list (default: "UMC,TE,AMPX")
 - `MOONSHOT_SYMBOL`: Moonshot symbol (default: "GME.WS")
 
 ### Target Allocations
-- `THEME_A_TARGET`: Theme A target allocation (default: 0.35)
-- `THEME_B_TARGET`: Theme B target allocation (default: 0.35)
-- `THEME_C_TARGET`: Theme C target allocation (default: 0.15)
-- `MOONSHOT_TARGET`: Moonshot target allocation (default: 0.20)
+- `THEME_A_TARGET`, `THEME_B_TARGET`, `THEME_C_TARGET`: Theme targets (defaults: 0.35, 0.35, 0.15)
+- `MOONSHOT_TARGET`: Moonshot target (default: 0.20)
 - `MOONSHOT_MAX`: Moonshot hard cap (default: 0.30)
 - `CASH_MINIMUM`: Minimum cash buffer (default: 0.20)
 
 ### Option Selection
-- `OPTION_DTE_MIN`: Minimum days to expiration (default: 60)
-- `OPTION_DTE_MAX`: Maximum days to expiration (default: 120)
-- `STRIKE_RANGE_MIN`: Minimum strike multiplier (default: 1.00)
-- `STRIKE_RANGE_MAX`: Maximum strike multiplier (default: 1.10)
-- `MAX_BID_ASK_SPREAD_PCT`: Maximum bid-ask spread (default: 0.12)
-- `MIN_OPEN_INTEREST`: Minimum open interest (default: 50)
-- `MIN_VOLUME`: Minimum volume (default: 10)
+- `OPTION_DTE_MIN`, `OPTION_DTE_MAX`: DTE range (defaults: 60, 120)
+- `OPTION_DTE_FALLBACK_MIN`, `OPTION_DTE_FALLBACK_MAX`: Fallback DTE if no expirations in range (defaults: 45, 150)
+- `STRIKE_RANGE_MIN`, `STRIKE_RANGE_MAX`: Strike multiplier vs spot (defaults: 1.00, 1.10)
+- `MAX_BID_ASK_SPREAD_PCT`: Max bid-ask spread (default: 0.12)
+- `MIN_OPEN_INTEREST`, `MIN_VOLUME`: Liquidity filters (defaults: 50, 10)
+
+### Roll Rules
+- `ROLL_TRIGGER_DTE`: Roll when DTE below this (default: 60)
+- `ROLL_TARGET_DTE`: Roll to expiration ~this DTE (default: 90)
+- `MAX_ROLL_DEBIT_PCT`: Max roll cost as % of current value (default: 0.35)
+- `MAX_ROLL_DEBIT_ABSOLUTE`: Max roll cost in dollars (default: 100.0)
 
 ### Profit/Loss Rules
-- `TAKE_PROFIT_100_PCT`: Take profit threshold at +100% (default: 1.00)
-- `TAKE_PROFIT_200_PCT`: Take profit threshold at +200% (default: 2.00)
-- `STOP_LOSS_DRAWDOWN_PCT`: Stop loss drawdown threshold (default: -0.40)
-- `CLOSE_IF_DTE_LT`: Close if DTE less than (default: 30)
+- `TAKE_PROFIT_100_PCT`, `TAKE_PROFIT_200_PCT`: Thresholds (defaults: 1.00, 2.00)
+- `TAKE_PROFIT_100_CLOSE_PCT`: Fraction to close at +100% (default: 0.50)
+- `STOP_LOSS_DRAWDOWN_PCT`: Stop loss drawdown (default: -0.40)
+- `STOP_LOSS_UNDERLYING_PCT`: Close if underlying below strike by this much (default: -0.05)
+- `CLOSE_IF_DTE_LT`: Close any position if DTE below (default: 30)
+- `CLOSE_IF_OTM_DTE_LT`: Close OTM options if DTE below (default: 30)
 
 ### Execution
-- `MAX_TRADES_PER_DAY`: Maximum trades per day (default: 5)
-- `ORDER_POLL_TIMEOUT_SECONDS`: Order polling timeout (default: 300)
-- `DRY_RUN`: Enable dry-run mode (default: false)
+- `MAX_TRADES_PER_DAY`: Max trades per day (default: 5)
+- `ORDER_PRICE_OFFSET_PCT`: Limit price offset from mid (default: 0.0)
+- `ORDER_POLL_TIMEOUT_SECONDS`: Order status poll timeout (default: 300)
+- `ORDER_POLL_INTERVAL_SECONDS`: Poll interval (default: 5)
+- `DRY_RUN`: Skip placing real orders (default: false)
+
+### Signals
+- `USE_SMA_FILTER`: Use SMA filter for entry (default: true)
+- `SMA_PERIOD`: SMA period (default: 20)
+- `MANUAL_MODE_ONLY`: Only open positions via manual/Telegram (default: false)
+
+### Trading Hours
+- `TRADE_EXTENDED_HOURS`: Allow extended-hours trading (default: false)
 
 ### Rebalancing
-- `REBALANCE_TIME_HOUR`: Rebalance hour (default: 9)
-- `REBALANCE_TIME_MINUTE`: Rebalance minute (default: 30)
+- `REBALANCE_TIME_HOUR`, `REBALANCE_TIME_MINUTE`: Daily run time (defaults: 9, 30)
 - `REBALANCE_TIMEZONE`: Timezone (default: "America/New_York")
 
 ### Guardrails
-- `KILL_SWITCH_DRAWDOWN_PCT`: Kill switch threshold (default: 0.25)
-- `KILL_SWITCH_LOOKBACK_DAYS`: Lookback period (default: 30)
+- `KILL_SWITCH_DRAWDOWN_PCT`: Stop new positions if drawdown exceeds (default: 0.25)
+- `KILL_SWITCH_LOOKBACK_DAYS`: Lookback for equity high (default: 30)
+- `KILL_SWITCH_COOLDOWN_DAYS`: Cooldown days (default: 5)
+
+### Database & Logging
+- `DB_PATH`: SQLite path (default: "data/trading_bot.db")
+- `LOG_LEVEL`: DEBUG, INFO, WARNING, ERROR (default: INFO)
+- `LOG_FILE`: Log file path (default: "logs/high_convexity_bot.log")
 
 ### Telegram + AI
 - `TELEGRAM_BOT_TOKEN`: Bot token from BotFather (required for Telegram bot)
 - `OPENAI_API_KEY`: OpenAI API key for AI chat (required for Telegram bot)
-- `ALLOWED_TELEGRAM_USER_IDS`: Comma-separated Telegram user IDs allowed to execute trades / change config (empty = allow all for read-only)
+- `ALLOWED_TELEGRAM_USER_IDS`: Comma-separated user IDs allowed to execute trades / change config (empty = read-only for all)
 
 ## Database
 
@@ -242,7 +276,13 @@ Database location: `data/trading_bot.db` (configurable via `DB_PATH`)
 
 ## Testing
 
-Run tests:
+From project root, run tests:
+
+```bash
+python3 -m pytest
+```
+
+Or:
 
 ```bash
 pytest
@@ -315,4 +355,3 @@ This will log all orders without actually placing them.
 ## License
 
 MIT
-# public-trading
