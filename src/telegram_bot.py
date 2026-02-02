@@ -323,6 +323,38 @@ TOOLS = [
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "export_trades_csv",
+            "description": "Export all trades to CSV file for a given date range. Returns a downloadable CSV file with order details.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "days": {
+                        "type": "integer",
+                        "description": "Number of days of history to export (default 30, max 365)"
+                    }
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "export_performance_report",
+            "description": "Generate a performance report summarizing P&L, win rate, and execution quality for a given date range. Returns a downloadable text file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "days": {
+                        "type": "integer",
+                        "description": "Number of days of history to include (default 30, max 365)"
+                    }
+                },
+            },
+        },
+    },
 ]
 
 SYSTEM_PROMPT = """You are a **professional hedge fund manager** AI for a high-convexity options/equity portfolio connected to Public.com. The user talks to you via Telegram. Your role: synthesize portfolio, risk, and market data; give **clear, actionable recommendations** with rationale; and explain in concise, institutional language where appropriate.
@@ -1426,6 +1458,34 @@ def run_tool(tool_name: str, arguments: Dict[str, Any], bot_instance: TradingBot
             bot_instance.storage.clear_pending_alerts()
             return "\n".join(lines)
 
+        if tool_name == "export_trades_csv":
+            try:
+                from src.export_manager import ExportManager
+
+                days = min(int(arguments.get("days", 30) or 30), 365)
+                export_manager = ExportManager(bot_instance.storage)
+                file_path = export_manager.generate_trades_csv(days)
+
+                # Return special format for file sending
+                return f"FILE:{file_path}"
+            except Exception as e:
+                logger.exception("export_trades_csv failed")
+                return f"Error exporting trades: {str(e)}"
+
+        if tool_name == "export_performance_report":
+            try:
+                from src.export_manager import ExportManager
+
+                days = min(int(arguments.get("days", 30) or 30), 365)
+                export_manager = ExportManager(bot_instance.storage)
+                file_path = export_manager.generate_performance_report(days)
+
+                # Return special format for file sending
+                return f"FILE:{file_path}"
+            except Exception as e:
+                logger.exception("export_performance_report failed")
+                return f"Error generating report: {str(e)}"
+
         return f"Unknown tool: {tool_name}"
     except Exception as e:
         logger.exception("Tool %s failed", tool_name)
@@ -1671,6 +1731,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 None,
                 lambda n=name, a=args: run_tool(n, a, bot_instance, user_id),
             )
+
+            # Check if tool returned a file to send
+            if result.startswith("FILE:"):
+                file_path = result[5:]  # Remove "FILE:" prefix
+
+                try:
+                    # Send file to user
+                    with open(file_path, "rb") as f:
+                        await context.bot.send_document(
+                            chat_id=update.effective_chat.id,
+                            document=f,
+                            caption=f"📊 Export complete: {Path(file_path).name}"
+                        )
+
+                    # Update result message for tool response
+                    result = f"✅ File sent: {Path(file_path).name}"
+                except Exception as e:
+                    logger.error(f"Failed to send file {file_path}: {e}")
+                    result = f"❌ Generated file but failed to send: {str(e)}"
+
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.id,

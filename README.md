@@ -389,6 +389,41 @@ Receive an optional morning briefing via Telegram before market open with portfo
 
 **How It Works**: The bot uses python-telegram-bot's built-in job queue to schedule daily messages. When enabled, subscribed users receive a proactive message at the configured time with fresh portfolio data and market context. The briefing runs in preview mode only—no trades are executed during briefing generation.
 
+### Export Trades and Reports (REQ-016)
+
+Export trade history and performance reports for record-keeping and tax purposes.
+
+**Export Formats**:
+- **CSV Export**: All orders with columns: order_id, symbol, side, quantity, limit_price, status, fill_price, created_at, filled_at, rationale, theme
+- **Performance Report**: Text file with P&L by theme, roll analysis, execution quality metrics
+
+**Telegram Tools**:
+- Ask: "Export my trades for the last 30 days" → Sends CSV file
+- Ask: "Generate performance report for last 90 days" → Sends text report
+- Default is 30 days, max is 365 days
+
+**File Output**:
+- Files saved to `data/exports/` directory
+- Filenames include date range: `trades_2026-01-01_to_2026-02-02.csv`
+- Files are also sent directly via Telegram
+
+**Manual CLI** (optional):
+```python
+from src.export_manager import ExportManager
+from src.storage import StorageManager
+
+storage = StorageManager()
+export_manager = ExportManager(storage)
+
+# Generate CSV
+csv_path = export_manager.generate_trades_csv(days=90)
+print(f"CSV exported to: {csv_path}")
+
+# Generate report
+report_path = export_manager.generate_performance_report(days=90)
+print(f"Report generated: {report_path}")
+```
+
 ## Database
 
 The bot uses SQLite to store:
