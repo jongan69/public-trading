@@ -67,6 +67,11 @@ src/
 - **No shorting**: Long positions only
 - **No naked options selling**: Long calls only
 - **Kill Switch**: Stops opening new positions if equity drawdown > 25% from 30-day high
+- **Emergency Stop** (`/pause`): Immediately pause all trading via Telegram command (toggle on/off)
+- **Trade Confirmations**: Large trades require two-step "YES" confirmation to execute
+- **Cool-down**: Optional automatic trading pause after large realized losses
+- **What-if Simulations**: Preview position changes before executing
+- **Performance Analytics**: Track P&L by theme, roll success, execution quality—read-only, no autonomous strategy changes
 - **Dry-run mode**: Test without placing real orders
 
 ## Installation
@@ -145,6 +150,9 @@ Then message your bot on Telegram. You can have full conversation about market n
 - **Images**: Send a screenshot of a chart, strategy doc, or table — the bot describes it and can help implement or discuss vs portfolio/options
 - **Build strategy via chat**: *"Set theme A to 40%"*, *"Use 60–90 DTE only"*, *"Set themes to AAPL, MSFT, GOOGL"*, *"I want 25% cash"*
 - **Trades**: *"Buy 10 GME.WS at 25"*, *"Turn on dry run"*
+- **What-if simulations**: *"What if I trim moonshot to 25%?"*, *"What if I rebalance now?"* — simulate position changes without executing
+- **Emergency controls**: `/pause` — immediately stop all trading (toggle on/off)
+- **Performance analytics**: *"Show performance summary"*, *"How are the themes performing?"* — P&L by theme, roll analysis, execution quality
 
 ### Task queue (do-work)
 
@@ -271,6 +279,29 @@ All configuration is managed through environment variables in `.env`. Values bel
 ### Execution authority
 - `EXECUTION_TIER`: `managed` (allow trades) or `read_only` (pause all trading; AI can still read portfolio and recommend). Default: `managed`. Set to `read_only` for emergency pause.
 
+### Human Control & Failure-Mode Mitigations
+- `CONFIRM_TRADE_THRESHOLD_USD`: Require confirmation for trades above this notional value (default: 500.0)
+- `CONFIRM_TRADE_THRESHOLD_CONTRACTS`: Require confirmation for option trades above this many contracts (default: 10)
+- `COOLDOWN_ENABLED`: Enable cool-down after large realized losses (default: false)
+- `COOLDOWN_LOSS_THRESHOLD_PCT`: Loss percentage that triggers cool-down (default: 0.10 = 10%)
+- `COOLDOWN_LOSS_THRESHOLD_USD`: Loss dollar amount that triggers cool-down (default: 500.0)
+- `COOLDOWN_DURATION_MINUTES`: How long to block trading after large loss (default: 60)
+
+**Emergency stop**: Use `/pause` in Telegram to immediately pause all trading (toggle on/off). Trading can also be paused via `EXECUTION_TIER=read_only` in `.env`.
+
+**Trade confirmations**: Large trades (>$500 or >10 contracts by default) require two-step confirmation: bot asks "Reply YES to execute". This prevents accidental large orders.
+
+**Cool-down after loss**: When enabled, if a realized loss exceeds thresholds (10% or $500 by default), bot blocks new trades for 60 minutes. This prevents emotional trading after losses.
+
+**What-if simulations**: Use `what_if_trim` and `what_if_rebalance` tools to preview position changes without executing. Ask the AI: "What if I trim moonshot to 25%?" or "What if I rebalance now?"
+
+**Performance analytics (learning loop)**: The bot tracks trade performance for transparency:
+- P&L by theme/moonshot over configurable time period
+- Roll analysis (rolled vs held to expiry)
+- Execution quality (slippage, favorable vs unfavorable fills)
+
+Access via `get_performance_summary` tool in Telegram. This is read-only analytics—the AI cannot autonomously change strategy, remove governance rules, or increase risk based on this data. Human interprets results and decides on any strategy adjustments.
+
 ### Database & Logging
 - `DB_PATH`: SQLite path (default: "data/trading_bot.db")
 - `LOG_LEVEL`: DEBUG, INFO, WARNING, ERROR (default: INFO)
@@ -286,12 +317,13 @@ All configuration is managed through environment variables in `.env`. Values bel
 The bot uses SQLite to store:
 
 - **Positions**: Current positions snapshot
-- **Orders**: Order history with status
+- **Orders**: Order history with status, rationale, theme, outcome, and P&L (for analytics)
 - **Fills**: Fill details
 - **Contracts**: Chosen option contracts
 - **Config Snapshots**: Configuration used each run
 - **Portfolio Snapshots**: Daily portfolio state
 - **Equity History**: Equity over time (for kill switch)
+- **Bot State**: Trading pause status, cool-down state, pending confirmations
 
 Database location: `data/trading_bot.db` (configurable via `DB_PATH`)
 

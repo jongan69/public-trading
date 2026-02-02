@@ -106,6 +106,16 @@ class HighConvexityConfig(BaseSettings):
     # Execution authority: read_only = no trades; managed = rebalance/roll/trim/manual (default)
     execution_tier: str = Field("managed", env="EXECUTION_TIER")
 
+    # Human control and failure mitigations (REQ-008)
+    # Trade confirmation thresholds
+    confirm_trade_threshold_usd: float = Field(500.0, env="CONFIRM_TRADE_THRESHOLD_USD")  # Confirm trades > $500
+    confirm_trade_threshold_contracts: int = Field(10, env="CONFIRM_TRADE_THRESHOLD_CONTRACTS")  # Confirm trades > 10 contracts
+    # Cool-down after large loss
+    cooldown_enabled: bool = Field(False, env="COOLDOWN_ENABLED")  # Enable cool-down after large loss
+    cooldown_loss_threshold_pct: float = Field(0.10, env="COOLDOWN_LOSS_THRESHOLD_PCT")  # 10% loss triggers cool-down
+    cooldown_loss_threshold_usd: float = Field(500.0, env="COOLDOWN_LOSS_THRESHOLD_USD")  # $500 loss triggers cool-down
+    cooldown_duration_minutes: int = Field(60, env="COOLDOWN_DURATION_MINUTES")  # Block trades for 60 minutes
+
     # Telegram + AI (optional; required when running Telegram bot)
     telegram_bot_token: str = Field("", env="TELEGRAM_BOT_TOKEN")
     openai_api_key: str = Field("", env="OPENAI_API_KEY")

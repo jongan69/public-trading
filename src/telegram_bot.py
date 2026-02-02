@@ -18,6 +18,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 from src.config import config
 from src.main import TradingBot
 from src.utils.logger import setup_logging
+from src.analytics import PerformanceAnalytics
 
 
 # --- Tool definitions for OpenAI (function calling) ---
@@ -217,6 +218,92 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_scenario",
+            "description": "Run price scenario analysis for current positions in an underlying. Shows position value at different price points and worst/best case outcomes. Use when user asks 'What if GME goes to $60?', 'How much should I hold?', or wants position risk analysis at specific price levels.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string", "description": "Underlying symbol to analyze (e.g. GME, AAPL, UMC)"},
+                    "price_points": {"type": "array", "items": {"type": "number"}, "description": "List of price points to analyze (e.g. [30, 50, 60, 100])"},
+                },
+                "required": ["symbol", "price_points"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "what_if_position",
+            "description": "Analyze hypothetical position value at different price points. Shows what would happen if you held X shares/contracts at different underlying prices. Use when user asks 'What if I bought 100 shares' or wants to model position scenarios before trading.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string", "description": "Symbol for the hypothetical position"},
+                    "quantity": {"type": "integer", "description": "Number of shares or contracts"},
+                    "price_points": {"type": "array", "items": {"type": "number"}, "description": "List of underlying price points to analyze"},
+                    "is_option": {"type": "boolean", "description": "True if analyzing an option position, False for equity"},
+                    "strike": {"type": "number", "description": "Strike price (required if is_option=True)"},
+                    "expiration": {"type": "string", "description": "Expiration date YYYY-MM-DD (required if is_option=True)"},
+                },
+                "required": ["symbol", "quantity", "price_points"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "option_payoff_analysis",
+            "description": "Calculate option payoff at expiration across price range. Shows intrinsic value at different underlying prices at expiry. Use when user asks about option payoff, breakeven analysis, or wants to see how an option performs at expiration.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "osi_symbol": {"type": "string", "description": "Option symbol in OSI format (use exact symbol from get_options_chain)"},
+                    "min_price": {"type": "number", "description": "Minimum underlying price for analysis (optional, auto-calculated if not provided)"},
+                    "max_price": {"type": "number", "description": "Maximum underlying price for analysis (optional, auto-calculated if not provided)"},
+                },
+                "required": ["osi_symbol"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "what_if_trim",
+            "description": "Simulate trimming a position to a target percentage. Shows what would happen if you reduced a position to X% allocation: how many shares/contracts to sell, at what price, resulting allocation. Use for 'what if I trim moonshot to 25%' or position sizing questions.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string", "description": "Symbol to trim (e.g. GME.WS, AAPL)"},
+                    "target_pct": {"type": "number", "description": "Target allocation percentage (0-100, e.g. 25 for 25%)"},
+                },
+                "required": ["symbol", "target_pct"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "what_if_rebalance",
+            "description": "Simulate a full rebalance without executing. Shows what orders would be placed to bring portfolio to target allocations. Use for 'what if I rebalance now' or 'show me rebalance impact' questions.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_performance_summary",
+            "description": "Get performance analytics: P&L by theme/moonshot, roll analysis, execution quality (slippage, favorable fills). Use when user asks about performance, what's working, trade quality, or wants to review results. Read-only analytics—does not change strategy.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "days": {"type": "integer", "description": "Number of days to analyze (default 30, max 365)"},
+                },
+            },
+        },
+    },
 ]
 
 SYSTEM_PROMPT = """You are a **professional hedge fund manager** AI for a high-convexity options/equity portfolio connected to Public.com. The user talks to you via Telegram. Your role: synthesize portfolio, risk, and market data; give **clear, actionable recommendations** with rationale; and explain in concise, institutional language where appropriate.
@@ -246,7 +333,11 @@ You are fully capable of:
 
 **Manual trades:** You can suggest and place trades (place_manual_trade) for **any** equity or option—not limited to theme symbols. Theme underlyings only define automated rebalance; they do not restrict your suggestions or orders.
 
-Tools: get_portfolio, get_portfolio_analysis, get_allocations, run_daily_logic_preview, run_daily_logic_and_execute, place_manual_trade, get_config, set_dry_run, get_market_news, get_option_expirations, get_options_chain, get_polymarket_odds, update_*.
+**Scenario analysis:** Use scenario tools to answer "How much should I hold?" with concrete numbers. Available tools: get_scenario(symbol, price_points) for current position analysis at different prices; what_if_position(symbol, quantity, price_points) for hypothetical position modeling; option_payoff_analysis(osi_symbol) for option payoff at expiration. Use when users ask "What if GME goes to $60?", "How much risk am I taking?", or want position sizing guidance.
+
+**Performance analytics (learning loop):** You have access to performance data via get_performance_summary (P&L by theme, roll analysis, execution quality). Use this to inform discussion and identify what's working. CRITICAL CONSTRAINTS: (1) Never suggest removing or loosening governance rules (kill switch, max position size, cash buffer, no margin). (2) Never suggest increasing position size, leverage, or risk after losses—only de-risking is allowed when drawdown is high. (3) Never invent new strategies or change core strategy logic autonomously—human decides on strategy changes. (4) Performance data is for transparency and informed discussion only; it does not authorize autonomous strategy modification.
+
+Tools: get_portfolio, get_portfolio_analysis, get_allocations, run_daily_logic_preview, run_daily_logic_and_execute, place_manual_trade, get_config, set_dry_run, get_market_news, get_option_expirations, get_options_chain, get_polymarket_odds, get_scenario, what_if_position, option_payoff_analysis, get_performance_summary, update_*.
 
 Never make up data—use the tools. For trades, confirm and summarize.
 
@@ -385,6 +476,70 @@ def _can_execute_trades(user_id: int) -> bool:
     if not allowed:
         return True  # no restriction
     return user_id in allowed
+
+
+def _check_and_trigger_cooldown(bot_instance: TradingBot, fill_details: Dict) -> Optional[str]:
+    """REQ-008: Check if a fill triggers cool-down due to large loss. Returns message if cool-down triggered.
+
+    Args:
+        bot_instance: Trading bot instance
+        fill_details: Fill details dict with symbol, quantity, fill_price
+
+    Returns:
+        Message string if cool-down triggered, None otherwise
+    """
+    if not config.cooldown_enabled:
+        return None
+
+    try:
+        symbol = fill_details.get("symbol", "")
+        fill_price = fill_details.get("fill_price", 0)
+        quantity = fill_details.get("quantity", 0)
+        side = fill_details.get("side") or fill_details.get("action", "")
+
+        # Only check on SELL/exit orders (realized loss)
+        if side.upper() != "SELL":
+            return None
+
+        # Get position entry price from storage or portfolio
+        pm = bot_instance.portfolio_manager
+        if symbol in pm.positions:
+            pos = pm.positions[symbol]
+            entry_price = pos.entry_price
+        else:
+            # Position might be closed; try to get from recent orders
+            recent_orders = bot_instance.storage.get_recent_orders(limit=50)
+            buys = [o for o in recent_orders if o.get("symbol") == symbol and o.get("side", "").upper() == "BUY" and o.get("status") == "FILLED"]
+            if not buys:
+                return None
+            entry_price = buys[0].get("limit_price", fill_price)  # Use most recent buy
+
+        # Calculate P&L
+        pnl_per_share = fill_price - entry_price
+        pnl_total = pnl_per_share * quantity
+        pnl_pct = (pnl_per_share / entry_price) if entry_price > 0 else 0
+
+        # Check thresholds
+        loss_pct_threshold = -abs(config.cooldown_loss_threshold_pct)
+        loss_usd_threshold = -abs(config.cooldown_loss_threshold_usd)
+
+        if pnl_pct <= loss_pct_threshold or pnl_total <= loss_usd_threshold:
+            # Trigger cool-down
+            cooldown_until = datetime.now() + timedelta(minutes=config.cooldown_duration_minutes)
+            bot_instance.storage.set_cooldown_until(cooldown_until)
+            logger.warning(
+                f"Cool-down triggered: {symbol} loss {pnl_pct*100:.1f}% (${pnl_total:.2f}). "
+                f"Blocking trades until {cooldown_until.isoformat()}"
+            )
+            return (
+                f"\n\n🕒 **Cool-down activated**: Large loss detected ({pnl_pct*100:.1f}%, ${pnl_total:.2f}). "
+                f"No new trades for {config.cooldown_duration_minutes} minutes to prevent emotional trading."
+            )
+
+    except Exception as e:
+        logger.exception("Cool-down check failed")
+
+    return None
 
 
 def _parse_strike_from_osi(symbol: str) -> Optional[float]:
@@ -539,11 +694,20 @@ def run_tool(tool_name: str, arguments: Dict[str, Any], bot_instance: TradingBot
                 return "Trading paused; read-only mode. Set EXECUTION_TIER=managed in .env to allow trades."
             if not _can_execute_trades(user_id):
                 return "Not allowed: your user ID is not in ALLOWED_TELEGRAM_USER_IDS. Add your ID to .env to execute trades."
+            # REQ-008: Check pause state
+            if bot_instance.storage.is_trading_paused():
+                return "⛔ Trading is PAUSED. Use /pause to resume trading before executing orders."
+            # REQ-008: Check cool-down
+            if bot_instance.storage.is_in_cooldown():
+                cooldown_until = bot_instance.storage.get_cooldown_until()
+                time_left = (cooldown_until - datetime.now()).total_seconds() / 60 if cooldown_until else 0
+                return f"🕒 Cool-down active. Trading blocked for {time_left:.0f} more minutes after recent large loss. This is a safety feature to prevent emotional trading."
             bot_instance.portfolio_manager.refresh_portfolio()
             orders = bot_instance.strategy.run_daily_logic()
             if not orders:
                 return "No orders to execute; portfolio already in line with targets."
             results = []
+            cooldown_msg = None
             for order_details in orders:
                 if bot_instance.strategy.trades_today >= config.max_trades_per_day:
                     results.append("Max trades per day reached; stopping.")
@@ -556,12 +720,40 @@ def run_tool(tool_name: str, arguments: Dict[str, Any], bot_instance: TradingBot
                         bot_instance.storage.update_order_status(
                             result["order_id"], "FILLED", datetime.now(timezone.utc).isoformat()
                         )
-                        bot_instance.storage.save_fill({
+                        fill_details = {
                             "order_id": result["order_id"],
                             "symbol": result["symbol"],
                             "quantity": result["quantity"],
                             "fill_price": result["price"],
-                        })
+                            "side": result.get("action", order_details.get("action")),
+                        }
+                        bot_instance.storage.save_fill(fill_details)
+
+                        # REQ-011: Compute realized P&L for SELL orders
+                        action = order_details.get("action", "").upper()
+                        if action == "SELL" and "entry_price" in order_details:
+                            entry_price = order_details["entry_price"]
+                            fill_price = result["price"]
+                            quantity = result["quantity"]
+                            realized_pnl = (fill_price - entry_price) * quantity
+                            outcome = "win" if realized_pnl > 0 else "loss"
+
+                            # Update the saved order with realized P&L and outcome
+                            bot_instance.storage.save_order({
+                                **order_details,
+                                **result,
+                                "realized_pnl": realized_pnl,
+                                "outcome": outcome,
+                            })
+
+                            logger.info(
+                                f"Realized P&L: ${realized_pnl:,.2f} ({outcome}) "
+                                f"on {result.get('symbol')}"
+                            )
+
+                        # REQ-008: Check if this fill triggers cool-down
+                        if not cooldown_msg:  # Only check once per execution
+                            cooldown_msg = _check_and_trigger_cooldown(bot_instance, fill_details)
                         bot_instance.strategy.trades_today += 1
                     # Show status clearly; if not FILLED, say still open; include rationale for transparency
                     line = f"Order: {result.get('action')} {result.get('symbol')} x{result.get('quantity')} -> {order_status}"
@@ -572,29 +764,132 @@ def run_tool(tool_name: str, arguments: Dict[str, Any], bot_instance: TradingBot
                     results.append(line)
                 else:
                     results.append(f"Failed: {order_details}")
-            return "\n".join(results)
+            response = "\n".join(results)
+            if cooldown_msg:
+                response += cooldown_msg
+            return response
 
         if tool_name == "place_manual_trade":
             if config.execution_tier.lower() == "read_only":
                 return "Trading paused; read-only mode. Set EXECUTION_TIER=managed in .env to place trades."
             if not _can_execute_trades(user_id):
                 return "Not allowed: your user ID is not in ALLOWED_TELEGRAM_USER_IDS. Add your ID to .env to place trades."
+            # REQ-008: Check pause state
+            if bot_instance.storage.is_trading_paused():
+                return "⛔ Trading is PAUSED. Use /pause to resume trading before placing orders."
+            # REQ-008: Check cool-down
+            if bot_instance.storage.is_in_cooldown():
+                cooldown_until = bot_instance.storage.get_cooldown_until()
+                time_left = (cooldown_until - datetime.now()).total_seconds() / 60 if cooldown_until else 0
+                return f"🕒 Cool-down active. Trading blocked for {time_left:.0f} more minutes after recent large loss. This is a safety feature to prevent emotional trading."
             symbol = arguments.get("symbol", "").strip()
             side = (arguments.get("side") or "BUY").upper()
             quantity = int(arguments.get("quantity", 0))
             limit_price = float(arguments.get("limit_price", 0))
             if not symbol or quantity <= 0 or limit_price <= 0:
                 return "Invalid: symbol, quantity, and limit_price must be set and positive."
+
+            # REQ-008: Check if confirmation needed for large trades
+            is_option = symbol.endswith("-OPTION") or (len(symbol) > 10 and symbol[:10].isalpha())
+            notional = quantity * limit_price
+            needs_confirm = False
+            confirm_reason = ""
+
+            if notional > config.confirm_trade_threshold_usd:
+                needs_confirm = True
+                confirm_reason = f"trade value ${notional:,.2f} exceeds ${config.confirm_trade_threshold_usd:,.0f} threshold"
+            elif is_option and quantity > config.confirm_trade_threshold_contracts:
+                needs_confirm = True
+                confirm_reason = f"{quantity} contracts exceeds {config.confirm_trade_threshold_contracts} contract threshold"
+
+            if needs_confirm:
+                # Store pending confirmation in bot state
+                confirmation_key = f"pending_trade_{user_id}"
+                trade_data = json.dumps({
+                    "symbol": symbol,
+                    "side": side,
+                    "quantity": quantity,
+                    "limit_price": limit_price,
+                    "notional": notional,
+                })
+                bot_instance.storage.set_bot_state(confirmation_key, trade_data)
+
+                return (
+                    f"⚠️ **Large trade confirmation required**\n\n"
+                    f"Trade: {side} {quantity} {'contracts' if is_option else 'shares'} of {symbol} at ${limit_price:.2f}\n"
+                    f"Notional: ${notional:,.2f}\n"
+                    f"Reason: {confirm_reason}\n\n"
+                    f"Reply with **YES** to execute this trade, or anything else to cancel."
+                )
+
             is_option = symbol.endswith("-OPTION") or (len(symbol) > 10 and symbol[:10].isalpha())
             order_details = {
                 "action": side,
                 "symbol": symbol,
                 "quantity": quantity,
                 "price": limit_price,
+                "rationale": f"Manual trade via Telegram",
             }
+
+            # REQ-011: Derive theme and add entry_price for SELL orders
+            theme = None
+            entry_price = None
+            if side.upper() == "SELL":
+                # Get entry price from existing position
+                bot_instance.portfolio_manager.refresh_portfolio()
+                pm = bot_instance.portfolio_manager
+                if symbol in pm.positions:
+                    position = pm.positions[symbol]
+                    entry_price = position.entry_price
+                    # Derive theme from underlying
+                    underlying = position.underlying or symbol
+                    theme = bot_instance.strategy.get_theme_for_underlying(underlying)
+                    order_details["entry_price"] = entry_price
+
+            if theme:
+                order_details["theme"] = theme
+
             result = bot_instance.execution_manager.execute_order(order_details)
             if result:
+                # Save order to storage
+                bot_instance.storage.save_order({**order_details, **result})
+
                 order_status = (result.get("status") or "").upper()
+                if order_status == "FILLED":
+                    # Update order status
+                    bot_instance.storage.update_order_status(
+                        result["order_id"], "FILLED", datetime.now(timezone.utc).isoformat()
+                    )
+                    # Save fill
+                    bot_instance.storage.save_fill({
+                        "order_id": result["order_id"],
+                        "symbol": result["symbol"],
+                        "quantity": result["quantity"],
+                        "fill_price": result["price"],
+                    })
+
+                    # REQ-011: Compute realized P&L for SELL orders
+                    if side.upper() == "SELL" and entry_price:
+                        fill_price = result["price"]
+                        qty = result["quantity"]
+                        realized_pnl = (fill_price - entry_price) * qty
+                        outcome = "win" if realized_pnl > 0 else "loss"
+
+                        # Update the saved order with realized P&L and outcome
+                        bot_instance.storage.save_order({
+                            **order_details,
+                            **result,
+                            "realized_pnl": realized_pnl,
+                            "outcome": outcome,
+                        })
+
+                        logger.info(
+                            f"Manual trade realized P&L: ${realized_pnl:,.2f} ({outcome}) "
+                            f"on {result.get('symbol')}"
+                        )
+
+                    bot_instance.strategy.trades_today += 1
+
                 msg = f"Order placed: {result.get('action')} {result.get('symbol')} x{result.get('quantity')} @ ${result.get('price')} -> {order_status}"
                 if order_status != "FILLED":
                     msg += " (still open; may fill later)"
@@ -845,6 +1140,236 @@ def run_tool(tool_name: str, arguments: Dict[str, Any], bot_instance: TradingBot
                 return f"No Polymarket markets matched '{topic}'. Try a broader topic or leave topic empty for sample."
             return "\n".join(lines[:50])
 
+        if tool_name == "get_scenario":
+            try:
+                from src.scenario import ScenarioEngine
+                scenario_engine = ScenarioEngine(bot_instance.market_data_manager, bot_instance.portfolio_manager)
+
+                symbol = arguments.get("symbol", "").strip().upper()
+                price_points = arguments.get("price_points", [])
+
+                if not symbol:
+                    return "Please provide a symbol for scenario analysis."
+                if not price_points:
+                    return "Please provide price points for analysis."
+
+                result = scenario_engine.price_ladder_analysis(symbol, price_points)
+                return scenario_engine.format_scenario_summary(result)
+
+            except Exception as e:
+                logger.exception("get_scenario failed")
+                return f"Error in scenario analysis: {e}"
+
+        if tool_name == "what_if_position":
+            try:
+                from src.scenario import ScenarioEngine
+                scenario_engine = ScenarioEngine(bot_instance.market_data_manager, bot_instance.portfolio_manager)
+
+                symbol = arguments.get("symbol", "").strip().upper()
+                quantity = arguments.get("quantity", 0)
+                price_points = arguments.get("price_points", [])
+                is_option = arguments.get("is_option", False)
+                strike = arguments.get("strike")
+                expiration = arguments.get("expiration")
+
+                if not symbol or quantity == 0:
+                    return "Please provide symbol and quantity for hypothetical position analysis."
+                if not price_points:
+                    return "Please provide price points for analysis."
+
+                # Create hypothetical position
+                hyp_position = {
+                    "symbol": symbol,
+                    "quantity": quantity,
+                    "entry_price": 0,  # Not used in analysis
+                    "is_option": is_option,
+                    "underlying": symbol if not is_option else symbol
+                }
+
+                if is_option:
+                    if not strike or not expiration:
+                        return "Strike and expiration required for option analysis."
+                    hyp_position.update({
+                        "strike": strike,
+                        "expiration": expiration,
+                        "osi_symbol": f"{symbol}  {expiration.replace('-', '')}C{int(strike*1000):08d}"
+                    })
+
+                result = scenario_engine.price_ladder_analysis(
+                    symbol,
+                    price_points,
+                    include_positions=False,
+                    hypothetical_positions=[hyp_position]
+                )
+
+                return scenario_engine.format_scenario_summary(result)
+
+            except Exception as e:
+                logger.exception("what_if_position failed")
+                return f"Error in position analysis: {e}"
+
+        if tool_name == "option_payoff_analysis":
+            try:
+                from src.scenario import ScenarioEngine
+                scenario_engine = ScenarioEngine(bot_instance.market_data_manager, bot_instance.portfolio_manager)
+
+                osi_symbol = arguments.get("osi_symbol", "").strip()
+                min_price = arguments.get("min_price")
+                max_price = arguments.get("max_price")
+
+                if not osi_symbol:
+                    return "Please provide an OSI symbol for option payoff analysis."
+
+                price_range = None
+                if min_price is not None and max_price is not None:
+                    price_range = (min_price, max_price)
+
+                result = scenario_engine.option_payoff_at_expiry(osi_symbol, price_range)
+
+                if "error" in result:
+                    return f"Error: {result['error']}"
+
+                # Format payoff results
+                lines = [f"**Option Payoff at Expiry: {result['osi_symbol']}**"]
+                lines.append(f"Underlying: {result['underlying']}")
+                lines.append(f"Strike: ${result['strike']:.2f}")
+                lines.append(f"Type: {'Call' if result['option_type'] == 'C' else 'Put'}")
+                if result.get('current_underlying_price'):
+                    lines.append(f"Current underlying: ${result['current_underlying_price']:.2f}")
+                lines.append("")
+                lines.append("**Payoff at expiration:**")
+
+                payoffs = result.get("payoffs", {})
+                for price, payoff in sorted(payoffs.items()):
+                    lines.append(f"At ${price:.2f}: ${payoff:.2f}")
+
+                return "\n".join(lines)
+
+            except Exception as e:
+                logger.exception("option_payoff_analysis failed")
+                return f"Error in payoff analysis: {e}"
+
+        if tool_name == "what_if_trim":
+            try:
+                symbol = (arguments.get("symbol") or "").strip().upper()
+                target_pct = float(arguments.get("target_pct", 0))
+
+                if not symbol:
+                    return "Please provide a symbol to trim."
+                if target_pct < 0 or target_pct > 100:
+                    return "Target percentage must be between 0 and 100."
+
+                bot_instance.portfolio_manager.refresh_portfolio()
+                pm = bot_instance.portfolio_manager
+                dm = bot_instance.data_manager
+
+                # Find position
+                if symbol not in pm.positions:
+                    return f"No position found for {symbol}."
+
+                pos = pm.positions[symbol]
+                current_price = pm.get_position_price(pos)
+                current_mv = pos.get_market_value(current_price)
+                equity = pm.get_equity()
+                current_allocation_pct = (current_mv / equity * 100) if equity > 0 else 0
+                target_allocation = target_pct / 100.0
+                target_mv = equity * target_allocation
+
+                if target_mv >= current_mv:
+                    return f"{symbol}: Current allocation {current_allocation_pct:.1f}% (${current_mv:,.2f}). Target {target_pct:.1f}% would be ${target_mv:,.2f}. No trim needed—target is equal or higher than current."
+
+                # Calculate trim
+                mv_to_sell = current_mv - target_mv
+                quantity_to_sell = int(mv_to_sell / current_price) if current_price > 0 else 0
+
+                if quantity_to_sell <= 0:
+                    return f"{symbol}: Trim calculation resulted in 0 quantity. Current: {current_allocation_pct:.1f}%, target: {target_pct:.1f}%."
+
+                new_mv = current_mv - (quantity_to_sell * current_price)
+                new_allocation_pct = (new_mv / equity * 100) if equity > 0 else 0
+
+                lines = [
+                    f"**What-if: Trim {symbol} to {target_pct:.0f}%**",
+                    f"Current allocation: {current_allocation_pct:.1f}% (${current_mv:,.2f})",
+                    f"Target allocation: {target_pct:.1f}% (${target_mv:,.2f})",
+                    f"",
+                    f"**Proposed action:**",
+                    f"Sell {quantity_to_sell} {'shares' if pos.instrument_type.value == 'equity' else 'contracts'} at ~${current_price:.2f}",
+                    f"Proceeds: ${quantity_to_sell * current_price:,.2f}",
+                    f"",
+                    f"**After trim:**",
+                    f"New position value: ${new_mv:,.2f}",
+                    f"New allocation: {new_allocation_pct:.1f}%",
+                    f"",
+                    f"Note: This is a simulation. No orders placed.",
+                ]
+                return "\n".join(lines)
+
+            except Exception as e:
+                logger.exception("what_if_trim failed")
+                return f"Error in trim simulation: {e}"
+
+        if tool_name == "what_if_rebalance":
+            try:
+                bot_instance.portfolio_manager.refresh_portfolio()
+                # Use run_daily_logic_preview logic (already in dry-run mode)
+                old_dry = config.dry_run
+                config.dry_run = True
+                try:
+                    orders = bot_instance.strategy.run_daily_logic()
+                finally:
+                    config.dry_run = old_dry
+
+                if not orders:
+                    return "**What-if: Rebalance simulation**\n\nNo rebalance needed. Portfolio is within targets."
+
+                pm = bot_instance.portfolio_manager
+                equity = pm.get_equity()
+                current_alloc = pm.get_current_allocations()
+                target_alloc = pm.get_target_allocations()
+
+                lines = [
+                    "**What-if: Rebalance simulation**",
+                    "",
+                    "**Current vs Target allocations:**",
+                ]
+                for k in ["theme_a", "theme_b", "theme_c", "moonshot", "cash"]:
+                    curr = current_alloc.get(k, 0) * 100
+                    targ = target_alloc.get(k, 0) * 100
+                    lines.append(f"  {k}: {curr:.1f}% → {targ:.1f}%")
+
+                lines.append("")
+                lines.append(f"**Proposed orders ({len(orders)}):**")
+
+                for i, o in enumerate(orders, 1):
+                    action = o.get("action", "")
+                    symbol = o.get("symbol", "")
+                    qty = o.get("quantity", 0)
+                    price = o.get("price", 0)
+                    notional = qty * price
+                    rationale = o.get("rationale", "")
+                    line = f"{i}. {action} {symbol} x{qty} @ ${price:.2f} (${notional:,.2f})"
+                    if rationale:
+                        line += f" — {rationale}"
+                    lines.append(line)
+
+                lines.append("")
+                lines.append("Note: This is a simulation. No orders placed.")
+                return "\n".join(lines)
+
+            except Exception as e:
+                logger.exception("what_if_rebalance failed")
+                return f"Error in rebalance simulation: {e}"
+
+        if tool_name == "get_performance_summary":
+            try:
+                days = min(int(arguments.get("days", 30) or 30), 365)
+                analytics = PerformanceAnalytics(bot_instance.storage)
+                return analytics.get_performance_summary(days)
+            except Exception as e:
+                logger.exception("get_performance_summary failed")
+                return f"Error retrieving performance analytics: {e}"
+
         return f"Unknown tool: {tool_name}"
     except Exception as e:
         logger.exception("Tool %s failed", tool_name)
@@ -866,6 +1391,129 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     msg = update.message
     text = (msg.caption or msg.text or "").strip()
     photos = list(msg.photo) if msg and msg.photo else []
+
+    # REQ-008: Check for pending trade confirmation
+    confirmation_key = f"pending_trade_{user_id}"
+    pending_trade_str = bot_instance.storage.get_bot_state(confirmation_key)
+
+    if pending_trade_str:
+        # User has a pending trade confirmation
+        if text.upper() == "YES":
+            # Execute the pending trade
+            bot_instance.storage.delete_bot_state(confirmation_key)
+            try:
+                trade_data = json.loads(pending_trade_str)
+                symbol = trade_data["symbol"]
+                side = trade_data["side"]
+                quantity = trade_data["quantity"]
+                limit_price = trade_data["limit_price"]
+
+                is_option = symbol.endswith("-OPTION") or (len(symbol) > 10 and symbol[:10].isalpha())
+                order_details = {
+                    "action": side,
+                    "symbol": symbol,
+                    "quantity": quantity,
+                    "price": limit_price,
+                    "rationale": f"Manual trade via Telegram (confirmed)",
+                }
+
+                # REQ-011: Derive theme and add entry_price for SELL orders
+                theme = None
+                entry_price = None
+                if side.upper() == "SELL":
+                    # Get entry price from existing position
+                    await loop.run_in_executor(
+                        None,
+                        lambda: bot_instance.portfolio_manager.refresh_portfolio(),
+                    )
+                    pm = bot_instance.portfolio_manager
+                    if symbol in pm.positions:
+                        position = pm.positions[symbol]
+                        entry_price = position.entry_price
+                        # Derive theme from underlying
+                        underlying = position.underlying or symbol
+                        theme = bot_instance.strategy.get_theme_for_underlying(underlying)
+                        order_details["entry_price"] = entry_price
+
+                if theme:
+                    order_details["theme"] = theme
+
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: bot_instance.execution_manager.execute_order(order_details),
+                )
+
+                if result:
+                    # Save order to storage
+                    await loop.run_in_executor(
+                        None,
+                        lambda: bot_instance.storage.save_order({**order_details, **result}),
+                    )
+
+                    order_status = (result.get("status") or "").upper()
+                    if order_status == "FILLED":
+                        # Update order status
+                        await loop.run_in_executor(
+                            None,
+                            lambda: bot_instance.storage.update_order_status(
+                                result["order_id"], "FILLED", datetime.now(timezone.utc).isoformat()
+                            ),
+                        )
+                        # Save fill
+                        await loop.run_in_executor(
+                            None,
+                            lambda: bot_instance.storage.save_fill({
+                                "order_id": result["order_id"],
+                                "symbol": result["symbol"],
+                                "quantity": result["quantity"],
+                                "fill_price": result["price"],
+                            }),
+                        )
+
+                        # REQ-011: Compute realized P&L for SELL orders
+                        if side.upper() == "SELL" and entry_price:
+                            fill_price = result["price"]
+                            qty = result["quantity"]
+                            realized_pnl = (fill_price - entry_price) * qty
+                            outcome = "win" if realized_pnl > 0 else "loss"
+
+                            # Update the saved order with realized P&L and outcome
+                            await loop.run_in_executor(
+                                None,
+                                lambda: bot_instance.storage.save_order({
+                                    **order_details,
+                                    **result,
+                                    "realized_pnl": realized_pnl,
+                                    "outcome": outcome,
+                                }),
+                            )
+
+                            logger.info(
+                                f"Manual confirmed trade realized P&L: ${realized_pnl:,.2f} ({outcome}) "
+                                f"on {result.get('symbol')}"
+                            )
+
+                        await loop.run_in_executor(
+                            None,
+                            lambda: setattr(bot_instance.strategy, 'trades_today', bot_instance.strategy.trades_today + 1),
+                        )
+
+                    reply_msg = f"✅ **Trade confirmed and placed**\n\n{result.get('action')} {result.get('symbol')} x{result.get('quantity')} @ ${result.get('price')} → {order_status}"
+                    if order_status != "FILLED":
+                        reply_msg += " (still open; may fill later)"
+                    await msg.reply_text(reply_msg, parse_mode="HTML")
+                else:
+                    await msg.reply_text("❌ Trade confirmation accepted but order failed. Check symbol, liquidity, or cash buffer.", parse_mode="HTML")
+            except Exception as e:
+                logger.exception("Confirmed trade execution failed")
+                await msg.reply_text(f"❌ Error executing confirmed trade: {e}", parse_mode="HTML")
+            return
+        else:
+            # User cancelled the trade
+            bot_instance.storage.delete_bot_state(confirmation_key)
+            await msg.reply_text("❌ Trade cancelled. No order placed.", parse_mode="HTML")
+            return
 
     if not text and not photos:
         await msg.reply_text(
@@ -990,11 +1638,50 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /start. Show fixed suggestion keyboard; user can still type custom messages."""
     await update.message.reply_text(
-        "Hey—I’m your trading assistant. Text or images, I’ve got you.\n\n"
-        "Tap a button below or type anything. Ask for <b>deep research</b> on a topic (e.g. \"deep research on AAPL\" or \"what's going on with Fed\") and I'll pull news, Polymarket, options, and your portfolio into one synthesis.",
+        "Hey—I'm your trading assistant. Text or images, I've got you.\n\n"
+        "Tap a button below or type anything. Ask for <b>deep research</b> on a topic (e.g. \"deep research on AAPL\" or \"what's going on with Fed\") and I'll pull news, Polymarket, options, and your portfolio into one synthesis.\n\n"
+        "<b>Emergency controls:</b> /pause to stop all trading.",
         parse_mode="HTML",
         reply_markup=START_KEYBOARD,
     )
+
+
+async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /pause. Toggle trading pause (emergency stop)."""
+    bot_instance: TradingBot = context.bot_data["trading_bot"]
+    user_id = update.effective_user.id if update.effective_user else 0
+
+    if not _can_execute_trades(user_id):
+        await update.message.reply_text(
+            "Not allowed: your user ID is not in ALLOWED_TELEGRAM_USER_IDS.",
+            parse_mode="HTML",
+        )
+        return
+
+    # Toggle pause state
+    storage = bot_instance.storage
+    is_paused = storage.is_trading_paused()
+
+    if is_paused:
+        # Resume trading
+        storage.set_trading_paused(False)
+        await update.message.reply_text(
+            "<b>Trading RESUMED</b>\n\n"
+            "All trading functions are now enabled. The bot can place orders when you request them or during automated rebalancing.",
+            parse_mode="HTML",
+        )
+    else:
+        # Pause trading
+        storage.set_trading_paused(True)
+        await update.message.reply_text(
+            "<b>⛔ TRADING PAUSED</b>\n\n"
+            "Emergency stop activated. No new trades will be placed until you resume.\n\n"
+            "• Portfolio queries and analysis still work\n"
+            "• Dry-run simulations still work\n"
+            "• No orders will be executed\n\n"
+            "To resume trading, use /pause again.",
+            parse_mode="HTML",
+        )
 
 
 def main() -> None:
@@ -1013,6 +1700,7 @@ def main() -> None:
     app.bot_data["openai_client"] = OpenAI(api_key=config.openai_api_key)
 
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("pause", cmd_pause))
     app.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
 

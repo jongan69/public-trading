@@ -34,13 +34,41 @@ class HighConvexityStrategy:
         self.last_rebalance_date = None
         logger.info("High-convexity strategy initialized")
     
+    def get_theme_for_underlying(self, underlying: str) -> Optional[str]:
+        """Get theme name for an underlying symbol (REQ-011: for analytics).
+
+        Args:
+            underlying: Underlying symbol
+
+        Returns:
+            Theme name or None if not a theme position
+        """
+        if not underlying:
+            return None
+
+        underlying_upper = underlying.upper()
+
+        # Check if it's the moonshot symbol
+        if config.moonshot_symbol and underlying_upper == config.moonshot_symbol.upper():
+            return "moonshot"
+
+        # Check theme underlyings
+        if len(config.theme_underlyings) > 0 and config.theme_underlyings[0].upper() == underlying_upper:
+            return "theme_a"
+        if len(config.theme_underlyings) > 1 and config.theme_underlyings[1].upper() == underlying_upper:
+            return "theme_b"
+        if len(config.theme_underlyings) > 2 and config.theme_underlyings[2].upper() == underlying_upper:
+            return "theme_c"
+
+        return None
+
     def check_entry_signal(self, underlying_symbol: str, underlying_price: float) -> bool:
         """Check if entry signal is valid.
-        
+
         Args:
             underlying_symbol: Underlying symbol
             underlying_price: Current underlying price
-            
+
         Returns:
             True if entry is allowed
         """
@@ -224,6 +252,8 @@ class HighConvexityStrategy:
                         "action": "SELL",
                         "price": float(sell_price),
                         "rationale": rationale,
+                        "theme": "moonshot",  # REQ-011: tag with theme for analytics
+                        "entry_price": position.entry_price,  # REQ-011: for realized P&L
                     }
         
         return None
@@ -292,6 +322,7 @@ class HighConvexityStrategy:
                         "underlying": underlying,
                         "contract_info": contract,
                         "rationale": rationale,
+                        "theme": theme_name,  # REQ-011: tag with theme for analytics
                     })
             
             elif need < -100:  # Need to reduce position
@@ -311,6 +342,8 @@ class HighConvexityStrategy:
                             "quantity": close_qty,
                             "price": current_price,
                             "rationale": rationale,
+                            "theme": theme_name,  # REQ-011: tag with theme for analytics
+                            "entry_price": position.entry_price,  # REQ-011: for realized P&L
                         })
                         break
         
@@ -342,6 +375,8 @@ class HighConvexityStrategy:
                     rationale = f"Take profit: +{pnl_pct:.0f}% (close all)"
                 else:
                     rationale = f"Take profit: +{pnl_pct:.0f}% (close {tp_qty})"
+                # REQ-011: derive theme for analytics
+                theme = self.get_theme_for_underlying(position.underlying or position.symbol)
                 orders.append({
                     "action": "SELL",
                     "symbol": position.symbol,
@@ -349,6 +384,8 @@ class HighConvexityStrategy:
                     "price": sell_price,
                     "reason": "TAKE_PROFIT",
                     "rationale": rationale,
+                    "theme": theme,  # REQ-011: tag with theme for analytics
+                    "entry_price": position.entry_price,  # REQ-011: for realized P&L
                 })
                 continue
             elif should_tp and tp_qty:
@@ -362,6 +399,8 @@ class HighConvexityStrategy:
                     rationale = f"Stop loss: pnl {pnl_pct:.0f}%"
                     if dte is not None:
                         rationale += f", DTE={dte}"
+                    # REQ-011: derive theme for analytics
+                    theme = self.get_theme_for_underlying(position.underlying or position.symbol)
                     orders.append({
                         "action": "SELL",
                         "symbol": position.symbol,
@@ -369,6 +408,8 @@ class HighConvexityStrategy:
                         "price": sell_price,
                         "reason": "STOP_LOSS",
                         "rationale": rationale,
+                        "theme": theme,  # REQ-011: tag with theme for analytics
+                        "entry_price": position.entry_price,  # REQ-011: for realized P&L
                     })
                     continue
                 logger.warning(f"Skipping stop loss for {position.symbol}: no valid sell price (bid/last)")
@@ -380,6 +421,8 @@ class HighConvexityStrategy:
                 underlying = position.underlying or "option"
                 rationale_close = f"Roll: {underlying} DTE={dte} < {config.roll_trigger_dte} (close)"
                 rationale_open = f"Roll: {underlying} (open new)"
+                # REQ-011: derive theme for analytics
+                theme = self.get_theme_for_underlying(position.underlying or position.symbol)
                 # Close current (use bid for options)
                 orders.append({
                     "action": "SELL",
@@ -388,6 +431,8 @@ class HighConvexityStrategy:
                     "price": sell_price,
                     "reason": "ROLL_CLOSE",
                     "rationale": rationale_close,
+                    "theme": theme,  # REQ-011: tag with theme for analytics
+                    "entry_price": position.entry_price,  # REQ-011: for realized P&L
                 })
                 # Open new
                 orders.append({
@@ -399,6 +444,7 @@ class HighConvexityStrategy:
                     "contract_info": new_contract,
                     "reason": "ROLL_OPEN",
                     "rationale": rationale_open,
+                    "theme": theme,  # REQ-011: tag with theme for analytics
                 })
             elif should_roll and new_contract:
                 logger.warning(f"Skipping roll for {position.symbol}: no valid sell price (bid/last)")

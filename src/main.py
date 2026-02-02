@@ -64,30 +64,82 @@ class TradingBot:
     
     def check_kill_switch(self) -> bool:
         """Check if kill switch should be activated.
-        
+
         Returns:
             True if kill switch is active, False otherwise
         """
         equity = self.portfolio_manager.get_equity()
-        
+
         # Save equity history
         self.storage.save_equity_history(equity)
-        
+
         # Get high from last N days
         high_equity = self.storage.get_equity_high_last_n_days(config.kill_switch_lookback_days)
-        
+
         if high_equity is None:
             return False
-        
+
         drawdown_pct = (equity - high_equity) / high_equity
-        
+
         if drawdown_pct <= -config.kill_switch_drawdown_pct:
             logger.warning(
                 f"Kill switch activated: drawdown={drawdown_pct*100:.2f}% "
                 f"(equity=${equity:.2f}, high=${high_equity:.2f})"
             )
             return True
-        
+
+        return False
+
+    def check_and_trigger_cooldown(self, order_details: dict, result: dict) -> bool:
+        """REQ-012: Check if a fill triggers cool-down due to large loss.
+
+        Args:
+            order_details: Original order details with entry_price
+            result: Execution result with fill_price, quantity, symbol
+
+        Returns:
+            True if cool-down was triggered, False otherwise
+        """
+        if not config.cooldown_enabled:
+            return False
+
+        try:
+            action = order_details.get("action", "").upper()
+            # Only check on SELL/exit orders (realized loss)
+            if action != "SELL":
+                return False
+
+            entry_price = order_details.get("entry_price")
+            if not entry_price:
+                return False
+
+            fill_price = result.get("price", 0)
+            quantity = result.get("quantity", 0)
+            symbol = result.get("symbol", "")
+
+            # Calculate P&L
+            pnl_per_share = fill_price - entry_price
+            pnl_total = pnl_per_share * quantity
+            pnl_pct = (pnl_per_share / entry_price) if entry_price > 0 else 0
+
+            # Check thresholds
+            loss_pct_threshold = -abs(config.cooldown_loss_threshold_pct)
+            loss_usd_threshold = -abs(config.cooldown_loss_threshold_usd)
+
+            if pnl_pct <= loss_pct_threshold or pnl_total <= loss_usd_threshold:
+                # Trigger cool-down
+                from datetime import timedelta
+                cooldown_until = datetime.now() + timedelta(minutes=config.cooldown_duration_minutes)
+                self.storage.set_cooldown_until(cooldown_until)
+                logger.warning(
+                    f"Cool-down triggered: {symbol} loss {pnl_pct*100:.1f}% (${pnl_total:.2f}). "
+                    f"Blocking trades until {cooldown_until.isoformat()}"
+                )
+                return True
+
+        except Exception as e:
+            logger.exception("Cool-down check failed")
+
         return False
     
     def run_daily_logic(self):
@@ -124,13 +176,23 @@ class TradingBot:
             
             # Run strategy logic
             orders = self.strategy.run_daily_logic()
-            
+
             if not orders:
                 logger.info("No orders to execute")
                 return
-            
+
+            # REQ-012: Check cooldown before executing orders
+            if config.cooldown_enabled and self.storage.is_in_cooldown():
+                cooldown_until = self.storage.get_cooldown_until()
+                time_left = (cooldown_until - datetime.now()).total_seconds() / 60 if cooldown_until else 0
+                logger.warning(
+                    f"Cool-down active. Trading blocked for {time_left:.0f} more minutes. "
+                    f"Skipping {len(orders)} orders."
+                )
+                return
+
             logger.info(f"Executing {len(orders)} orders")
-            
+
             # Execute orders
             for order_details in orders:
                 if self.strategy.trades_today >= config.max_trades_per_day:
@@ -162,7 +224,38 @@ class TradingBot:
                             "quantity": result["quantity"],
                             "fill_price": result["price"],
                         })
-                        
+
+                        # REQ-011: Compute realized P&L for SELL orders
+                        action = order_details.get("action", "").upper()
+                        if action == "SELL" and "entry_price" in order_details:
+                            entry_price = order_details["entry_price"]
+                            fill_price = result["price"]
+                            quantity = result["quantity"]
+                            realized_pnl = (fill_price - entry_price) * quantity
+                            outcome = "win" if realized_pnl > 0 else "loss"
+
+                            # Update the saved order with realized P&L and outcome
+                            self.storage.save_order({
+                                **order_details,
+                                **result,
+                                "realized_pnl": realized_pnl,
+                                "outcome": outcome,
+                            })
+
+                            logger.info(
+                                f"Realized P&L: ${realized_pnl:,.2f} ({outcome}) "
+                                f"on {result.get('symbol')}"
+                            )
+
+                        # REQ-012: Check if this fill triggers cool-down
+                        cooldown_triggered = self.check_and_trigger_cooldown(order_details, result)
+                        if cooldown_triggered:
+                            logger.warning(
+                                f"Cool-down triggered after fill. Stopping execution of remaining orders."
+                            )
+                            # Stop executing remaining orders in this batch
+                            break
+
                         # Update strategy trade counter
                         self.strategy.trades_today += 1
                         logger.info(f"Order filled: {result.get('symbol')} x{result.get('quantity')}")

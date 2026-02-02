@@ -124,10 +124,20 @@ class StorageManager:
                 UNIQUE(date)
             )
         """)
-        
+
+        # Bot state (REQ-008: pause, cool-down, confirmations)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS bot_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         conn.commit()
         conn.close()
         self._migrate_orders_rationale()
+        self._migrate_orders_learning_loop()
         logger.debug("Database schema initialized")
 
     def _migrate_orders_rationale(self):
@@ -140,6 +150,32 @@ class StorageManager:
             cursor.execute("ALTER TABLE orders ADD COLUMN rationale TEXT")
             conn.commit()
             logger.debug("Added rationale column to orders table")
+        conn.close()
+
+    def _migrate_orders_learning_loop(self):
+        """Add theme and outcome columns to orders (REQ-009: learning loop)."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(orders)")
+        columns = [row[1] for row in cursor.fetchall()]
+
+        changes = []
+        if "theme" not in columns:
+            cursor.execute("ALTER TABLE orders ADD COLUMN theme TEXT")
+            changes.append("theme")
+        if "outcome" not in columns:
+            cursor.execute("ALTER TABLE orders ADD COLUMN outcome TEXT")
+            changes.append("outcome")
+        if "entry_price" not in columns:
+            cursor.execute("ALTER TABLE orders ADD COLUMN entry_price REAL")
+            changes.append("entry_price")
+        if "realized_pnl" not in columns:
+            cursor.execute("ALTER TABLE orders ADD COLUMN realized_pnl REAL")
+            changes.append("realized_pnl")
+
+        if changes:
+            conn.commit()
+            logger.debug(f"Added learning loop columns to orders table: {', '.join(changes)}")
         conn.close()
 
     def save_position(self, position: Dict):
@@ -203,18 +239,22 @@ class StorageManager:
         conn.close()
     
     def save_order(self, order: Dict):
-        """Save an order (including rationale when present for transparency)."""
+        """Save an order (including rationale, theme, outcome for learning loop)."""
 
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
         preflight_json = json.dumps(order.get("preflight")) if order.get("preflight") else None
         rationale = order.get("rationale") or ""
+        theme = order.get("theme")
+        outcome = order.get("outcome")
+        entry_price = order.get("entry_price")
+        realized_pnl = order.get("realized_pnl")
 
         cursor.execute("""
-            INSERT OR REPLACE INTO orders 
-            (order_id, symbol, side, quantity, limit_price, status, preflight_data, rationale, created_at, filled_at, canceled_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO orders
+            (order_id, symbol, side, quantity, limit_price, status, preflight_data, rationale, theme, outcome, entry_price, realized_pnl, created_at, filled_at, canceled_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             order["order_id"],
             order["symbol"],
@@ -224,6 +264,10 @@ class StorageManager:
             order.get("status", "PENDING"),
             preflight_json,
             rationale,
+            theme,
+            outcome,
+            entry_price,
+            realized_pnl,
             order.get("created_at", datetime.now().isoformat()),
             order.get("filled_at"),
             order.get("canceled_at"),
@@ -417,25 +461,130 @@ class StorageManager:
     
     def get_recent_orders(self, limit: int = 100) -> List[Dict]:
         """Get recent orders.
-        
+
         Args:
             limit: Maximum number of orders to return
-            
+
         Returns:
             List of order dictionaries
         """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        
+
         cursor.execute("""
             SELECT * FROM orders
             ORDER BY created_at DESC
             LIMIT ?
         """, (limit,))
-        
+
         rows = cursor.fetchall()
         columns = [desc[0] for desc in cursor.description]
         orders = [dict(zip(columns, row)) for row in rows]
-        
+
         conn.close()
         return orders
+
+    # REQ-008: Bot state management for pause, cool-down, and confirmations
+
+    def set_bot_state(self, key: str, value: str):
+        """Set bot state value.
+
+        Args:
+            key: State key (e.g. 'trading_paused', 'cooldown_until')
+            value: State value as string
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            INSERT OR REPLACE INTO bot_state (key, value, updated_at)
+            VALUES (?, ?, ?)
+        """, (key, value, datetime.now().isoformat()))
+
+        conn.commit()
+        conn.close()
+
+    def get_bot_state(self, key: str) -> Optional[str]:
+        """Get bot state value.
+
+        Args:
+            key: State key
+
+        Returns:
+            State value or None if not found
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT value FROM bot_state WHERE key = ?", (key,))
+        result = cursor.fetchone()
+
+        conn.close()
+        return result[0] if result else None
+
+    def delete_bot_state(self, key: str):
+        """Delete bot state value.
+
+        Args:
+            key: State key to delete
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("DELETE FROM bot_state WHERE key = ?", (key,))
+
+        conn.commit()
+        conn.close()
+
+    def is_trading_paused(self) -> bool:
+        """Check if trading is paused via bot state.
+
+        Returns:
+            True if trading is paused, False otherwise
+        """
+        paused = self.get_bot_state("trading_paused")
+        return paused == "true" if paused else False
+
+    def set_trading_paused(self, paused: bool):
+        """Set trading paused state.
+
+        Args:
+            paused: True to pause trading, False to resume
+        """
+        self.set_bot_state("trading_paused", "true" if paused else "false")
+
+    def get_cooldown_until(self) -> Optional[datetime]:
+        """Get cool-down expiry time.
+
+        Returns:
+            Datetime when cool-down expires, or None if not in cool-down
+        """
+        cooldown_str = self.get_bot_state("cooldown_until")
+        if not cooldown_str:
+            return None
+        try:
+            return datetime.fromisoformat(cooldown_str)
+        except (ValueError, TypeError):
+            return None
+
+    def set_cooldown_until(self, until: Optional[datetime]):
+        """Set cool-down expiry time.
+
+        Args:
+            until: Datetime when cool-down should expire, or None to clear cool-down
+        """
+        if until:
+            self.set_bot_state("cooldown_until", until.isoformat())
+        else:
+            self.delete_bot_state("cooldown_until")
+
+    def is_in_cooldown(self) -> bool:
+        """Check if bot is in cool-down period.
+
+        Returns:
+            True if in cool-down, False otherwise
+        """
+        cooldown_until = self.get_cooldown_until()
+        if not cooldown_until:
+            return False
+        return datetime.now() < cooldown_until

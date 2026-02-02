@@ -1,8 +1,9 @@
 ---
 id: REQ-009
 title: Learning loop (safe, no autonomous strategy change)
-status: pending
+status: completed
 created_at: 2025-02-02T00:00:00Z
+completed_at: 2026-02-02T15:20:00Z
 user_request: UR-002
 ---
 
