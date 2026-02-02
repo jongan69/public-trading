@@ -1,4 +1,5 @@
 """Main entry point for high-convexity portfolio trading bot."""
+import os
 import signal
 import sys
 import time
@@ -34,9 +35,16 @@ class TradingBot:
         logger.info("High-Convexity Portfolio Trading Bot")
         logger.info("=" * 70)
         
-        # Get or select account number (env > saved file > interactive only if TTY)
+        # Get or select account number (env > config > saved file > interactive only if TTY)
         if account_number is None:
-            account_number = config.account_number or AccountManager.get_saved_account()
+            account_number = (
+                (config.account_number and config.account_number.strip())
+                or os.environ.get("PUBLIC_ACCOUNT_NUMBER", "").strip()
+                or os.environ.get("ACCOUNT_NUMBER", "").strip()
+                or AccountManager.get_saved_account()
+            )
+            if account_number == "":
+                account_number = None
         
         if account_number is None:
             if not sys.stdin.isatty():
