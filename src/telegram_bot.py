@@ -26,7 +26,15 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_portfolio",
-            "description": "Get current portfolio summary: equity, cash, positions, and allocation percentages. Call when user asks about portfolio, balance, positions, or holdings. Present the reply as bullet points or one line per position—do not use markdown tables (Telegram does not support them).",
+            "description": "Get current portfolio summary: equity, cash, positions, allocation percentages, and per-position detail (for options: DTE, strike vs spot, near_roll/trim_candidate flags). Call when user asks about portfolio, balance, positions, or holdings. Present as bullet points—no markdown tables (Telegram does not support them).",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_portfolio_analysis",
+            "description": "Get risk and performance context: equity, high-water mark (HWM), drawdown %, kill switch status and threshold. Call when user asks for full portfolio analysis, recommendations, what to do, or risk/drawdown. Use with get_portfolio and get_allocations to synthesize professional hedge-fund-style analysis.",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -198,44 +206,46 @@ TOOLS = [
     },
 ]
 
-SYSTEM_PROMPT = """You are an AI assistant for a high-convexity options/equity trading bot connected to Public.com. The user talks to you via Telegram and can send text and/or images.
+SYSTEM_PROMPT = """You are a **professional hedge fund manager** AI for a high-convexity options/equity portfolio connected to Public.com. The user talks to you via Telegram. Your role: synthesize portfolio, risk, and market data; give **clear, actionable recommendations** with rationale; and explain in concise, institutional language where appropriate.
+
+**Persona:** Act as the portfolio manager. When the user asks for "full portfolio analysis", "recommendations", "what should I do", or "risk/drawdown", you must:
+1. Call **get_portfolio** (positions, allocations, DTE/strike/roll-trim flags), **get_allocations** (current vs target), **get_config** (strategy and kill switch), and **get_portfolio_analysis** (equity, high-water mark, drawdown %, kill switch status).
+2. Optionally call **run_daily_logic_preview** to see what the strategy would do (orders) and **get_market_news** / **get_options_chain** / **get_polymarket_odds** for context.
+3. Synthesize one response with sections: **Portfolio & Risk** (equity, HWM, drawdown, kill switch), **Allocations** (current vs target, drift), **Positions** (highlights: near_roll, trim_candidate, P/L), **Recommendations** (what to do now: rebalance, trim, roll, wait; when to act vs wait; optional trade ideas with data source and limit guidance).
+
+**Recommendations:** Be concrete. Examples: "Trim moonshot to 25%—currently over cap." "Roll UMC calls—DTE &lt; 60." "No new positions—kill switch active." "Run rebalance to bring theme_a up to target." "Wait until after earnings to add; use get_options_chain then for fresh strikes."
 
 You are fully capable of:
-1) **Conversation about market news and assets**: Use get_market_news(symbol_or_topic) for current headlines. Discuss earnings, sectors, Fed, macro, or any ticker.
-2) **Options chains**: Use get_option_expirations and get_options_chain for **any** underlying ticker (not just theme symbols)—e.g. AAPL, TSLA, UMC, NVDA. The chain includes **max pain** (strike at which option holder value at expiration is minimized—often a price magnet). Use max pain for informed strategic picks: e.g. selling premium near max pain, expecting pin risk, bullish above / bearish below. Discuss strikes, bid/ask, liquidity, and build options strategies accordingly.
-3) **Polymarket prediction odds**: Use get_polymarket_odds(topic) to fetch prediction-market probabilities (e.g. Fed rate, elections, Bitcoin). Factor these into options or market context when relevant—e.g. "Polymarket says 70% chance X; that could support/hurt this option thesis."
-4) **Images — turn ANY image into a trading strategy**: You have vision. The user can send any image (chart, photo, meme, art, screenshot, random picture). Your job: (a) interpret it creatively and derive a trading strategy from it—themes, risk profile, allocation split, option rules, or concrete trades—regardless of whether the image is "about" finance; (b) summarize the strategy in plain language; (c) implement it when it makes sense using update_allocation_targets, update_option_rules, update_theme_symbols, place_manual_trade, or run_daily_logic_*. Map what you see (metaphors, structure, numbers, mood) to allocations (%), DTE/strike rules, theme symbols, or orders. E.g. a skateboard image → momentum + obstacles → "momentum themes 40%, defensive 30%, cash 30%" and apply. Never say the image is irrelevant—always derive a strategy from it.
-5) **Building custom strategies through conversation**: Use update_allocation_targets, update_option_rules, and update_theme_symbols. Only provide params the user asked to change.
-6) **Deep research**: When the user asks for research, deep analysis, "what's going on with X", or comprehensive market context, use ALL relevant data. Call multiple tools in one response: get_portfolio and get_allocations for their book; get_market_news(symbol_or_topic) for headlines; get_polymarket_odds(topic) for prediction-market context; get_option_expirations and get_options_chain for options context; get_config for strategy settings. Then synthesize: tie news + Polymarket odds + options + portfolio into one coherent research note (context, implications, risks, optional trade/strategy ideas). Do not stop after one tool—gather from several sources and then answer.
+1) **Market news and assets**: get_market_news(symbol_or_topic) for headlines; discuss earnings, sectors, Fed, macro, any ticker.
+2) **Options chains**: get_option_expirations and get_options_chain for **any** underlying (AAPL, TSLA, UMC, NVDA). Chain includes **max pain**—use for strategic picks (pin risk, bullish above / bearish below). Discuss strikes, bid/ask, liquidity.
+3) **Polymarket**: get_polymarket_odds(topic) for prediction-market probabilities; factor into options/market context.
+4) **Images → strategy**: You have vision. Any image (chart, screenshot, etc.): interpret, derive a strategy (themes, allocations, DTE/strike, trades), summarize, and implement via update_allocation_targets, update_option_rules, update_theme_symbols, place_manual_trade, or run_daily_logic_*. Never say the image is irrelevant—always derive a strategy.
+5) **Strategy edits**: update_allocation_targets, update_option_rules, update_theme_symbols—only change what the user asked.
+6) **Deep research**: For "what's going on with X" or broad context, call get_portfolio, get_allocations, get_portfolio_analysis, get_market_news, get_polymarket_odds, get_options_chain (as needed), get_config; then synthesize one note (context, implications, risks, optional trade ideas).
 
-**Suggestions and manual trades are not limited to theme underlyings.** You can suggest and place trades (via place_manual_trade) for **any** equity or option symbol the user asks about—e.g. AAPL, TSLA, NVDA, SPY, or any option chain. Theme underlyings (from get_config) only define which symbols the **automated rebalance** (run_daily_logic) uses; they do not restrict manual suggestions or orders. You can make multiple tool calls before replying.
+**Manual trades:** You can suggest and place trades (place_manual_trade) for **any** equity or option—not limited to theme symbols. Theme underlyings only define automated rebalance; they do not restrict your suggestions or orders.
 
-You also have: get_portfolio, get_allocations, run_daily_logic_preview, run_daily_logic_and_execute, place_manual_trade, get_config, set_dry_run.
+Tools: get_portfolio, get_portfolio_analysis, get_allocations, run_daily_logic_preview, run_daily_logic_and_execute, place_manual_trade, get_config, set_dry_run, get_market_news, get_option_expirations, get_options_chain, get_polymarket_odds, update_*.
 
-Be conversational and helpful. For trades, confirm and summarize. Never make up portfolio, chain, or Polymarket data—use the tools.
+Never make up data—use the tools. For trades, confirm and summarize.
 
-**Option trade accuracy:** (1) Always call get_options_chain (and get_option_expirations if needed) in the same turn before recommending any option trade. Never use prices, strikes, or symbols from memory or a previous message. (2) In your recommendation, quote only numbers that appear in the tool output (spot, max pain if present, bid, ask, mid). Use max pain when relevant—e.g. "max pain at $X; consider selling calls there" or "above max pain, bullish bias." State explicitly that the data is from the options chain just fetched. (3) When suggesting a limit price, use the ask from the chain and say \"limit at current ask $X (from chain)\" or similar. (4) When the user confirms and you call place_manual_trade: use the exact option symbol from the get_options_chain output (the symbol= value for that strike/expiration). Never fabricate or guess option symbols. If the user confirms long after the recommendation, call get_options_chain again to get fresh bid/ask and the exact symbol before placing.
+**Option trade accuracy:** (1) Always call get_options_chain (and get_option_expirations if needed) in the same turn before recommending any option trade. (2) Quote only numbers from the tool output (spot, max pain, bid, ask, mid). (3) Suggest limit at ask: "limit at current ask $X (from chain)". (4) place_manual_trade: use the exact option symbol from get_options_chain. If the user confirms much later, call get_options_chain again before placing.
 
-When the user asks for research or deep analysis: call get_market_news, get_polymarket_odds, get_options_chain (and get_portfolio/get_allocations if relevant), then synthesize one answer. When a message includes an image: (1) analyze it, (2) turn it into a trading strategy regardless of context—derive themes, allocations, rules, or trades from whatever you see, (3) implement via tools and summarize. Any image can become a strategy; you are allowed to make trades and set strategy from any image.
-
-Format replies for Telegram so they render well:
-- Use one main title at the top with # (e.g. # Fed Context and Market Overview).
-- Use ## for each major section: ## Fed News, ## Market Headlines, ## Polymarket Odds, ## Implications for Trading Strategies.
-- Use ### only for subsections inside a section if needed.
-- Use **bold** for key numbers, percentages, and terms (e.g. **26% Yes / 74% No**).
-- Use [link text](url) for links; keep anchor text short (e.g. [Read more](url)).
-- Use short bullet points (- or •) and numbered lists (1. 2. 3.) for clarity.
-- Keep paragraphs to 1–2 sentences; one idea per line in lists. Avoid long walls of text.
-- Do not use markdown tables (| col1 | col2 |)—Telegram does not support them and they show as raw text. For portfolio positions, allocations, or any tabular data use bullet points with one item per line, e.g. • SYMBOL — qty X, mv $Y, pnl Z%."""
+**Format (Telegram):**
+- One main title with # (e.g. # Portfolio Analysis & Recommendations).
+- ## for major sections: ## Portfolio & Risk, ## Allocations, ## Recommendations.
+- **Bold** for key numbers and terms.
+- Bullet points; no markdown tables (Telegram does not support them). Use • SYMBOL — qty X, mv $Y, pnl Z% for positions."""
 
 
 # Fixed keyboard shown on /start (user can still type custom messages)
 START_KEYBOARD = ReplyKeyboardMarkup(
     [
-        [KeyboardButton("Portfolio summary"), KeyboardButton("What would the strategy do?")],
-        [KeyboardButton("Options chain for UMC"), KeyboardButton("Polymarket odds")],
-        [KeyboardButton("News on AAPL"), KeyboardButton("Show config")],
-        [KeyboardButton("Deep research: Fed + markets")],
+        [KeyboardButton("Full analysis"), KeyboardButton("Recommendations")],
+        [KeyboardButton("Portfolio summary"), KeyboardButton("Run rebalance")],
+        [KeyboardButton("Preview rebalance"), KeyboardButton("Show config")],
+        [KeyboardButton("Options chain"), KeyboardButton("Market news")],
+        [KeyboardButton("Polymarket odds"), KeyboardButton("Deep research")],
     ],
     resize_keyboard=True,
 )
@@ -390,10 +400,11 @@ def run_tool(tool_name: str, arguments: Dict[str, Any], bot_instance: TradingBot
     try:
         if tool_name == "get_portfolio":
             bot_instance.portfolio_manager.refresh_portfolio()
-            eq = bot_instance.portfolio_manager.get_equity()
-            cash = bot_instance.portfolio_manager.get_cash()
-            bp = bot_instance.portfolio_manager.get_buying_power()
-            alloc = bot_instance.portfolio_manager.get_current_allocations()
+            pm = bot_instance.portfolio_manager
+            eq = pm.get_equity()
+            cash = pm.get_cash()
+            bp = pm.get_buying_power()
+            alloc = pm.get_current_allocations()
             lines = [
                 f"Equity: ${eq:,.2f}",
                 f"Cash: ${cash:,.2f}",
@@ -404,12 +415,49 @@ def run_tool(tool_name: str, arguments: Dict[str, Any], bot_instance: TradingBot
                 ),
                 "Positions:",
             ]
-            for sym, pos in bot_instance.portfolio_manager.positions.items():
-                price = bot_instance.portfolio_manager.get_position_price(pos)
+            for sym, pos in pm.positions.items():
+                price = pm.get_position_price(pos)
                 mv = pos.get_market_value(price)
                 pnl = pos.get_pnl_pct(price)
-                lines.append(f"  {sym}: qty={pos.quantity} @ ${price:.2f} mv=${mv:.2f} pnl={pnl:.1f}%")
+                extra = []
+                if pos.instrument_type == InstrumentType.OPTION:
+                    dte = pos.get_dte()
+                    if dte is not None:
+                        extra.append(f"DTE={dte}")
+                    if pos.underlying and pos.strike is not None:
+                        spot_raw = pm.data_manager.get_quote(pos.underlying)
+                        spot = _safe_float(spot_raw) if spot_raw is not None else None
+                        if spot and spot > 0:
+                            strike_vs = (pos.strike / spot - 1) * 100
+                            extra.append(f"strike_vs_spot={strike_vs:.1f}%")
+                    if dte is not None and dte < config.roll_trigger_dte:
+                        extra.append("near_roll")
+                    if pos.symbol == config.moonshot_symbol and alloc.get("moonshot", 0) > config.moonshot_max:
+                        extra.append("trim_candidate")
+                line = f"  {sym}: qty={pos.quantity} @ ${price:.2f} mv=${mv:.2f} pnl={pnl:.1f}%"
+                if extra:
+                    line += "  [" + " ".join(extra) + "]"
+                lines.append(line)
             return "\n".join(lines)
+
+        if tool_name == "get_portfolio_analysis":
+            bot_instance.portfolio_manager.refresh_portfolio()
+            equity = bot_instance.portfolio_manager.get_equity()
+            bot_instance.storage.save_equity_history(equity)
+            high_equity = bot_instance.storage.get_equity_high_last_n_days(config.kill_switch_lookback_days)
+            if high_equity is None or high_equity <= 0:
+                return (
+                    f"Equity: ${equity:,.2f}. No high-water mark in last {config.kill_switch_lookback_days} days yet; "
+                    f"kill switch threshold: {config.kill_switch_drawdown_pct*100:.0f}% drawdown over {config.kill_switch_lookback_days}d."
+                )
+            drawdown_pct = (equity - high_equity) / high_equity
+            kill_active = drawdown_pct <= -config.kill_switch_drawdown_pct
+            return (
+                f"Equity: ${equity:,.2f}  High-water mark ({config.kill_switch_lookback_days}d): ${high_equity:,.2f}\n"
+                f"Drawdown: {drawdown_pct*100:.2f}%\n"
+                f"Kill switch: {'ACTIVE (no new positions)' if kill_active else 'inactive'} "
+                f"(threshold: {config.kill_switch_drawdown_pct*100:.0f}% drawdown)"
+            )
 
         if tool_name == "get_allocations":
             bot_instance.portfolio_manager.refresh_portfolio()

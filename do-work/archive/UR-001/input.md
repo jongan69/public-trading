@@ -1,0 +1,1 @@
+I would like to kick off the do work loop as to create the perfect market data analysis chat based professional hedge fund manager for the portfolio, you may use claude if needed to expand on the bot as needed to fully capture every aspect of the portfolio and recomendations and tools for data retreieval and processing
