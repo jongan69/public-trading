@@ -647,3 +647,54 @@ class StorageManager:
             return datetime.fromisoformat(value)
         except Exception:
             return None
+
+    # =====================================
+    # Daily Briefing (REQ-015)
+    # =====================================
+
+    def get_briefing_subscribers(self) -> List[int]:
+        """Get list of chat IDs subscribed to daily briefing.
+
+        Returns:
+            List of chat IDs
+        """
+        subs_json = self.get_bot_state("daily_briefing_subscribers")
+        if not subs_json:
+            return []
+        try:
+            return json.loads(subs_json)
+        except Exception:
+            return []
+
+    def add_briefing_subscriber(self, chat_id: int):
+        """Add chat ID to daily briefing subscribers.
+
+        Args:
+            chat_id: Telegram chat ID to add
+        """
+        subs = self.get_briefing_subscribers()
+        if chat_id not in subs:
+            subs.append(chat_id)
+            self.set_bot_state("daily_briefing_subscribers", json.dumps(subs))
+
+    def remove_briefing_subscriber(self, chat_id: int):
+        """Remove chat ID from daily briefing subscribers.
+
+        Args:
+            chat_id: Telegram chat ID to remove
+        """
+        subs = self.get_briefing_subscribers()
+        if chat_id in subs:
+            subs.remove(chat_id)
+            self.set_bot_state("daily_briefing_subscribers", json.dumps(subs))
+
+    def is_briefing_subscriber(self, chat_id: int) -> bool:
+        """Check if chat ID is subscribed to daily briefing.
+
+        Args:
+            chat_id: Telegram chat ID to check
+
+        Returns:
+            True if subscribed, False otherwise
+        """
+        return chat_id in self.get_briefing_subscribers()

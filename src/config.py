@@ -123,6 +123,13 @@ class HighConvexityConfig(BaseSettings):
     cap_warning_threshold_pct: float = Field(0.28, env="CAP_WARNING_THRESHOLD_PCT")
     alert_coalescing_hours: int = Field(24, env="ALERT_COALESCING_HOURS")
 
+    # Daily Briefing (REQ-015)
+    daily_briefing_enabled: bool = Field(False, env="DAILY_BRIEFING_ENABLED")
+    briefing_time_hour: int = Field(9, env="BRIEFING_TIME_HOUR")
+    briefing_time_minute: int = Field(0, env="BRIEFING_TIME_MINUTE")
+    briefing_timezone: str = Field("America/New_York", env="BRIEFING_TIMEZONE")
+    briefing_include_market_news: bool = Field(True, env="BRIEFING_INCLUDE_MARKET_NEWS")
+
     # Telegram + AI (optional; required when running Telegram bot)
     telegram_bot_token: str = Field("", env="TELEGRAM_BOT_TOKEN")
     openai_api_key: str = Field("", env="OPENAI_API_KEY")

@@ -1740,6 +1740,216 @@ async def cmd_pause(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
 
+# =====================================
+# Daily Briefing (REQ-015)
+# =====================================
+
+async def generate_briefing_content(
+    bot_instance: TradingBot,
+    context: ContextTypes.DEFAULT_TYPE
+) -> str:
+    """Generate daily briefing content.
+
+    Args:
+        bot_instance: TradingBot instance for data access
+        context: Telegram context with bot and OpenAI client
+
+    Returns:
+        Formatted briefing message as HTML string
+    """
+    sections = ["<b>Good morning! Here's your daily briefing:</b>\n"]
+
+    # Get event loop for running sync functions
+    loop = asyncio.get_event_loop()
+
+    # Section 1: Portfolio Health
+    try:
+        sections.append("<b>📊 PORTFOLIO HEALTH</b>")
+        portfolio_health = await loop.run_in_executor(
+            None,
+            run_tool,
+            "get_portfolio_analysis",
+            {},
+            bot_instance,
+            0  # user_id=0 for automated jobs
+        )
+        sections.append(portfolio_health)
+    except Exception as e:
+        logger.error(f"Failed to get portfolio health: {e}")
+        sections.append("Portfolio health unavailable")
+
+    # Section 2: Today's Plan
+    try:
+        sections.append("\n<b>📋 TODAY'S PLAN</b>")
+        daily_plan = await loop.run_in_executor(
+            None,
+            run_tool,
+            "run_daily_logic_preview",
+            {},
+            bot_instance,
+            0
+        )
+        sections.append(daily_plan)
+    except Exception as e:
+        logger.error(f"Failed to get daily plan: {e}")
+        sections.append("Daily plan unavailable")
+
+    # Section 3: Market Context (optional)
+    if config.briefing_include_market_news:
+        try:
+            sections.append("\n<b>📰 MARKET CONTEXT</b>")
+            news_raw = await loop.run_in_executor(
+                None,
+                run_tool,
+                "get_market_news",
+                {"symbol_or_topic": "SPY"},
+                bot_instance,
+                0
+            )
+
+            # Optional: AI summarization (use existing OpenAI client from context)
+            openai_client: OpenAI = context.bot_data.get("openai_client")
+            if openai_client:
+                try:
+                    response = openai_client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[{
+                            "role": "user",
+                            "content": f"Summarize these market news headlines in 2-3 concise bullet points for a trader's morning briefing:\n\n{news_raw}"
+                        }],
+                        max_tokens=200
+                    )
+                    market_summary = response.choices[0].message.content
+                    sections.append(market_summary)
+                except Exception as e:
+                    logger.error(f"Failed to summarize market news: {e}")
+                    sections.append(news_raw[:500])  # Truncate if AI fails
+            else:
+                sections.append(news_raw[:500])  # Truncate if no AI
+        except Exception as e:
+            logger.error(f"Failed to get market context: {e}")
+            sections.append("Market context unavailable")
+
+    sections.append("\n<i>Commands: /briefing off to unsubscribe | /pause to stop trading</i>")
+
+    return "\n".join(sections)
+
+
+async def send_daily_briefing(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Job callback: Send daily briefing to all subscribers.
+
+    Scheduled via job_queue.run_daily() in main().
+
+    Args:
+        context: Telegram context with bot and bot_data
+    """
+    if not config.daily_briefing_enabled:
+        logger.debug("Daily briefing disabled via config")
+        return
+
+    bot_instance: TradingBot = context.bot_data["trading_bot"]
+
+    # Get subscribers
+    subscribers = bot_instance.storage.get_briefing_subscribers()
+    if not subscribers:
+        logger.info("No briefing subscribers")
+        return
+
+    logger.info(f"Sending daily briefing to {len(subscribers)} subscribers")
+
+    # Generate content
+    try:
+        briefing_text = await generate_briefing_content(bot_instance, context)
+    except Exception as e:
+        logger.error(f"Failed to generate briefing content: {e}")
+        return
+
+    # Send to all subscribers
+    success_count = 0
+    for chat_id in subscribers:
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=briefing_text,
+                parse_mode="HTML"
+            )
+            success_count += 1
+        except Exception as e:
+            logger.error(f"Failed to send briefing to chat_id {chat_id}: {e}")
+
+    logger.info(f"Daily briefing sent to {success_count}/{len(subscribers)} subscribers")
+
+
+async def cmd_briefing(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /briefing command: toggle subscription to daily briefing.
+
+    Usage:
+        /briefing         - Toggle subscription on/off
+        /briefing on      - Subscribe to daily briefing
+        /briefing off     - Unsubscribe from daily briefing
+        /briefing status  - Show subscription status and timing
+
+    Args:
+        update: Telegram update
+        context: Telegram context
+    """
+    bot_instance: TradingBot = context.bot_data["trading_bot"]
+    chat_id = update.effective_chat.id if update.effective_chat else 0
+
+    if not config.daily_briefing_enabled:
+        await update.message.reply_text(
+            "Daily briefing feature is disabled. Set DAILY_BRIEFING_ENABLED=true in .env to enable.",
+            parse_mode="HTML"
+        )
+        return
+
+    # Parse command argument
+    args = context.args or []
+    action = args[0].lower() if args else "toggle"
+
+    if action == "status":
+        # Show subscription status and timing
+        is_subscribed = bot_instance.storage.is_briefing_subscriber(chat_id)
+        status_text = (
+            f"<b>Daily Briefing Status</b>\n\n"
+            f"Subscription: {'<b>ON</b>' if is_subscribed else '<b>OFF</b>'}\n"
+            f"Delivery time: {config.briefing_time_hour:02d}:{config.briefing_time_minute:02d} {config.briefing_timezone}\n"
+            f"Include market news: {'Yes' if config.briefing_include_market_news else 'No'}\n\n"
+            f"Use /briefing on to subscribe or /briefing off to unsubscribe"
+        )
+        await update.message.reply_text(status_text, parse_mode="HTML")
+        return
+
+    # Handle toggle/on/off
+    is_subscribed = bot_instance.storage.is_briefing_subscriber(chat_id)
+
+    if action == "on" or (action == "toggle" and not is_subscribed):
+        # Subscribe
+        bot_instance.storage.add_briefing_subscriber(chat_id)
+        await update.message.reply_text(
+            f"<b>Daily briefing enabled</b>\n\n"
+            f"You'll receive a morning briefing at {config.briefing_time_hour:02d}:{config.briefing_time_minute:02d} {config.briefing_timezone} with:\n"
+            f"• Portfolio health (equity, drawdown, kill switch)\n"
+            f"• Today's planned rebalance preview\n"
+            f"• Market context (optional)\n\n"
+            f"Use /briefing off to unsubscribe anytime",
+            parse_mode="HTML"
+        )
+    elif action == "off" or (action == "toggle" and is_subscribed):
+        # Unsubscribe
+        bot_instance.storage.remove_briefing_subscriber(chat_id)
+        await update.message.reply_text(
+            "<b>Daily briefing disabled</b>\n\n"
+            "You won't receive morning briefings anymore. Use /briefing on to re-subscribe.",
+            parse_mode="HTML"
+        )
+    else:
+        await update.message.reply_text(
+            "Usage: /briefing [on|off|status]",
+            parse_mode="HTML"
+        )
+
+
 def main() -> None:
     """Run Telegram bot with AI."""
     if not config.telegram_bot_token or not config.openai_api_key:
@@ -1757,8 +1967,31 @@ def main() -> None:
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("pause", cmd_pause))
+    app.add_handler(CommandHandler("briefing", cmd_briefing))
     app.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
+
+    # Schedule daily briefing (if enabled)
+    if config.daily_briefing_enabled:
+        import datetime
+        import zoneinfo
+
+        briefing_time = datetime.time(
+            hour=config.briefing_time_hour,
+            minute=config.briefing_time_minute,
+            tzinfo=zoneinfo.ZoneInfo(config.briefing_timezone)
+        )
+
+        app.job_queue.run_daily(
+            send_daily_briefing,
+            time=briefing_time,
+            name="daily_briefing"
+        )
+
+        logger.info(
+            f"Daily briefing scheduled for {config.briefing_time_hour:02d}:{config.briefing_time_minute:02d} "
+            f"{config.briefing_timezone}"
+        )
 
     logger.info("Telegram bot running. Send /start for help.")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

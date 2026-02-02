@@ -364,6 +364,31 @@ The bot proactively monitors risk thresholds and warns you before they trigger, 
 
 **Alert Coalescing**: Each alert type is limited to once per 24 hours (configurable via `ALERT_COALESCING_HOURS`). This prevents spam while ensuring you see critical warnings daily.
 
+### Daily Briefing (REQ-015)
+
+Receive an optional morning briefing via Telegram before market open with portfolio health, today's planned actions, and market context.
+
+**Briefing Content**:
+- **Portfolio health**: Equity, change, drawdown %, kill switch status, cash %
+- **Today's planned actions**: Preview of rebalance orders (from `run_daily_logic_preview`)
+- **Market context**: News summary for SPY/market (optional, AI-summarized)
+
+**Configuration** (`.env`):
+- `DAILY_BRIEFING_ENABLED`: Enable/disable feature (default: false)
+- `BRIEFING_TIME_HOUR`: Hour to send briefing (default: 9)
+- `BRIEFING_TIME_MINUTE`: Minute to send briefing (default: 0)
+- `BRIEFING_TIMEZONE`: Timezone for delivery (default: America/New_York)
+- `BRIEFING_INCLUDE_MARKET_NEWS`: Include market news section (default: true)
+
+**Telegram Commands**:
+- `/briefing on` - Subscribe to daily briefings
+- `/briefing off` - Unsubscribe from daily briefings
+- `/briefing status` - Check subscription status and timing
+
+**Example**: Set `DAILY_BRIEFING_ENABLED=true` in `.env`, restart the Telegram bot, send `/briefing on` to receive morning updates at 9:00 AM ET each day.
+
+**How It Works**: The bot uses python-telegram-bot's built-in job queue to schedule daily messages. When enabled, subscribed users receive a proactive message at the configured time with fresh portfolio data and market context. The briefing runs in preview mode only—no trades are executed during briefing generation.
+
 ## Database
 
 The bot uses SQLite to store:
