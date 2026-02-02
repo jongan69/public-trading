@@ -82,6 +82,19 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "get_last_actions",
+            "description": "Get last N executed orders with rationale (why each trade was placed). Use when user asks what was done recently, last trades, or trade history with reasons.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "Number of recent orders to return (default 10, max 50)."},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_config",
             "description": "Get key strategy config: theme underlyings, target allocations, dry_run, kill switch, max trades per day.",
             "parameters": {"type": "object", "properties": {}},
@@ -213,7 +226,9 @@ SYSTEM_PROMPT = """You are a **professional hedge fund manager** AI for a high-c
 2. Optionally call **run_daily_logic_preview** to see what the strategy would do (orders) and **get_market_news** / **get_options_chain** / **get_polymarket_odds** for context.
 3. Synthesize one response with sections: **Portfolio & Risk** (equity, HWM, drawdown, kill switch), **Allocations** (current vs target, drift), **Positions** (highlights: near_roll, trim_candidate, P/L), **Recommendations** (what to do now: rebalance, trim, roll, wait; when to act vs wait; optional trade ideas with data source and limit guidance).
 
-**Recommendations:** Be concrete. Examples: "Trim moonshot to 25%—currently over cap." "Roll UMC calls—DTE &lt; 60." "No new positions—kill switch active." "Run rebalance to bring theme_a up to target." "Wait until after earnings to add; use get_options_chain then for fresh strikes."
+**Recommendations:** Be concrete. No ambiguity—use numbers. Examples: "Hold 90–110 warrants." "Trim moonshot to 25%—currently over cap." "Roll UMC calls—DTE &lt; 60." "Exit if drawdown &gt; 40%." "Run rebalance to bring theme_a up to target." "Wait until after earnings to add; use get_options_chain then for fresh strikes."
+
+**Emotional pressure:** Never amplify desperation. If the user uses desperation language (e.g. "I need to win back", "all in", "can't afford to lose", "last chance"), reframe in numbers: ranges, probabilities, caps. Do not suggest increasing size or risk to "catch up"; suggest cooling off or reducing exposure. Compress emotion into structure.
 
 You are fully capable of:
 1) **Market news and assets**: get_market_news(symbol_or_topic) for headlines; discuss earnings, sectors, Fed, macro, any ticker.
@@ -432,8 +447,8 @@ def run_tool(tool_name: str, arguments: Dict[str, Any], bot_instance: TradingBot
                             extra.append(f"strike_vs_spot={strike_vs:.1f}%")
                     if dte is not None and dte < config.roll_trigger_dte:
                         extra.append("near_roll")
-                    if pos.symbol == config.moonshot_symbol and alloc.get("moonshot", 0) > config.moonshot_max:
-                        extra.append("trim_candidate")
+                if pos.symbol == config.moonshot_symbol and alloc.get("moonshot", 0) > config.moonshot_max:
+                    extra.append("trim_candidate")
                 line = f"  {sym}: qty={pos.quantity} @ ${price:.2f} mv=${mv:.2f} pnl={pnl:.1f}%"
                 if extra:
                     line += "  [" + " ".join(extra) + "]"
@@ -468,6 +483,27 @@ def run_tool(tool_name: str, arguments: Dict[str, Any], bot_instance: TradingBot
                 lines.append(f"  {k}: {current[k]*100:.1f}% -> {target[k]*100:.1f}%")
             return "\n".join(lines)
 
+        if tool_name == "get_last_actions":
+            limit = min(int(arguments.get("limit", 10) or 10), 50)
+            orders = bot_instance.storage.get_recent_orders(limit=limit)
+            if not orders:
+                return "No executed orders on record."
+            lines = [f"Last {len(orders)} order(s):"]
+            for o in orders:
+                side = o.get("side") or o.get("action", "")
+                symbol = o.get("symbol", "")
+                qty = o.get("quantity", 0)
+                status = o.get("status", "")
+                rationale = o.get("rationale") or ""
+                created = o.get("created_at", "")[:19] if o.get("created_at") else ""
+                line = f"  {side} {symbol} x{qty} -> {status}"
+                if created:
+                    line += f" ({created})"
+                if rationale:
+                    line += f" — {rationale}"
+                lines.append(line)
+            return "\n".join(lines)
+
         if tool_name == "run_daily_logic_preview":
             bot_instance.portfolio_manager.refresh_portfolio()
             # Temporarily force dry_run so no real orders
@@ -478,13 +514,23 @@ def run_tool(tool_name: str, arguments: Dict[str, Any], bot_instance: TradingBot
             finally:
                 config.dry_run = old_dry
             if not orders:
-                return "Strategy would place no orders (portfolio already in line with targets)."
-            return "Planned orders (dry-run, not executed):\n" + json.dumps(
-                [{k: v for k, v in o.items() if k != "contract_info"} for o in orders],
-                indent=2,
-            )
+                return "No actions: portfolio within targets and rules."
+            lines = ["Planned orders (dry-run, not executed):"]
+            for i, o in enumerate(orders, 1):
+                action = o.get("action", "")
+                symbol = o.get("symbol", "")
+                qty = o.get("quantity", 0)
+                price = o.get("price", 0)
+                rationale = o.get("rationale", "")
+                line = f"  {i}. {action} {symbol} x{qty} @ ${price:.2f}"
+                if rationale:
+                    line += f" — {rationale}"
+                lines.append(line)
+            return "\n".join(lines)
 
         if tool_name == "run_daily_logic_and_execute":
+            if config.execution_tier.lower() == "read_only":
+                return "Trading paused; read-only mode. Set EXECUTION_TIER=managed in .env to allow trades."
             if not _can_execute_trades(user_id):
                 return "Not allowed: your user ID is not in ALLOWED_TELEGRAM_USER_IDS. Add your ID to .env to execute trades."
             bot_instance.portfolio_manager.refresh_portfolio()
@@ -511,16 +557,20 @@ def run_tool(tool_name: str, arguments: Dict[str, Any], bot_instance: TradingBot
                             "fill_price": result["price"],
                         })
                         bot_instance.strategy.trades_today += 1
-                    # Show status clearly; if not FILLED, say still open
+                    # Show status clearly; if not FILLED, say still open; include rationale for transparency
                     line = f"Order: {result.get('action')} {result.get('symbol')} x{result.get('quantity')} -> {order_status}"
                     if order_status != "FILLED":
                         line += " (still open; may fill later)"
+                    if order_details.get("rationale"):
+                        line += f" — {order_details['rationale']}"
                     results.append(line)
                 else:
                     results.append(f"Failed: {order_details}")
             return "\n".join(results)
 
         if tool_name == "place_manual_trade":
+            if config.execution_tier.lower() == "read_only":
+                return "Trading paused; read-only mode. Set EXECUTION_TIER=managed in .env to place trades."
             if not _can_execute_trades(user_id):
                 return "Not allowed: your user ID is not in ALLOWED_TELEGRAM_USER_IDS. Add your ID to .env to place trades."
             symbol = arguments.get("symbol", "").strip()
@@ -552,8 +602,10 @@ def run_tool(tool_name: str, arguments: Dict[str, Any], bot_instance: TradingBot
                 f"Targets: theme_a={config.theme_a_target*100:.0f}% theme_b={config.theme_b_target*100:.0f}% "
                 f"theme_c={config.theme_c_target*100:.0f}% moonshot={config.moonshot_target*100:.0f}% cash={config.cash_minimum*100:.0f}%\n"
                 f"Dry run: {config.dry_run}\n"
+                f"Execution tier: {config.execution_tier} (read_only = no trades; managed = allow trades)\n"
                 f"Max trades per day: {config.max_trades_per_day}\n"
-                f"Kill switch: {config.kill_switch_drawdown_pct*100:.0f}% drawdown over {config.kill_switch_lookback_days} days"
+                f"Kill switch: {config.kill_switch_drawdown_pct*100:.0f}% drawdown over {config.kill_switch_lookback_days} days\n"
+                f"Governance: max_single_position={config.max_single_position_pct*100:.0f}% max_correlated={config.max_correlated_pct*100:.0f}%"
             )
 
         if tool_name == "set_dry_run":

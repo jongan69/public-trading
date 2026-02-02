@@ -127,8 +127,21 @@ class StorageManager:
         
         conn.commit()
         conn.close()
+        self._migrate_orders_rationale()
         logger.debug("Database schema initialized")
-    
+
+    def _migrate_orders_rationale(self):
+        """Add rationale column to orders if missing (transparency/explainability)."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(orders)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "rationale" not in columns:
+            cursor.execute("ALTER TABLE orders ADD COLUMN rationale TEXT")
+            conn.commit()
+            logger.debug("Added rationale column to orders table")
+        conn.close()
+
     def save_position(self, position: Dict):
         """Save or update a position.
         
@@ -190,20 +203,18 @@ class StorageManager:
         conn.close()
     
     def save_order(self, order: Dict):
-        """Save an order.
-        
-        Args:
-            order: Order dictionary
-        """
+        """Save an order (including rationale when present for transparency)."""
+
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        
+
         preflight_json = json.dumps(order.get("preflight")) if order.get("preflight") else None
-        
+        rationale = order.get("rationale") or ""
+
         cursor.execute("""
             INSERT OR REPLACE INTO orders 
-            (order_id, symbol, side, quantity, limit_price, status, preflight_data, created_at, filled_at, canceled_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (order_id, symbol, side, quantity, limit_price, status, preflight_data, rationale, created_at, filled_at, canceled_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             order["order_id"],
             order["symbol"],
@@ -212,11 +223,12 @@ class StorageManager:
             order["price"] or order.get("limit_price"),
             order.get("status", "PENDING"),
             preflight_json,
+            rationale,
             order.get("created_at", datetime.now().isoformat()),
             order.get("filled_at"),
             order.get("canceled_at"),
         ))
-        
+
         conn.commit()
         conn.close()
     
