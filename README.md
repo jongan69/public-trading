@@ -312,6 +312,23 @@ Access via `get_performance_summary` tool in Telegram. This is read-only analyti
 - `OPENAI_API_KEY`: OpenAI API key for AI chat (required for Telegram bot)
 - `ALLOWED_TELEGRAM_USER_IDS`: Comma-separated user IDs allowed to execute trades / change config (empty = read-only for all)
 
+### Config Persistence via Telegram
+
+When you update config settings via Telegram (allocations, option rules, theme symbols), changes are automatically saved to `data/config_overrides.json` and persist across restarts.
+
+**Precedence order** (highest to lowest):
+1. **Telegram overrides** (`data/config_overrides.json`) - WINS
+2. Environment variables (`.env`)
+3. Hardcoded defaults (`src/config.py`)
+
+**To view your changes**: Ask the bot "show my config changes" or "what settings did I change?"
+
+**To reset Telegram changes**: Delete `data/config_overrides.json` and restart the bot.
+
+**To force a specific value**: Set it in `.env` and delete `data/config_overrides.json`.
+
+**Best practice**: Use `.env` for initial setup and infrastructure settings. Use Telegram for dynamic strategy adjustments during trading.
+
 ## Database
 
 The bot uses SQLite to store:

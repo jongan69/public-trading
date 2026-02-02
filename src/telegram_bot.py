@@ -208,6 +208,17 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "get_config_overrides",
+            "description": "Show which config settings have been customized via Telegram (vs .env defaults). Use when user asks 'what settings did I change?', 'show my config changes', 'what's different from default?', or 'what overrides are active?'.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_polymarket_odds",
             "description": "Fetch Polymarket prediction market odds (implied probabilities). Use when user asks about Polymarket, prediction markets, event odds, or wants to factor prediction-market probabilities into options/market context (e.g. Fed, elections, Bitcoin, macro events).",
             "parameters": {
@@ -1037,6 +1048,7 @@ def run_tool(tool_name: str, arguments: Dict[str, Any], bot_instance: TradingBot
         if tool_name == "update_allocation_targets":
             if not _can_execute_trades(user_id):
                 return "Not allowed: your user ID is not in ALLOWED_TELEGRAM_USER_IDS."
+            from src.utils.config_override_manager import ConfigOverrideManager
             changes = []
             for key, pct in [
                 ("theme_a_target", arguments.get("theme_a_pct")),
@@ -1050,43 +1062,67 @@ def run_tool(tool_name: str, arguments: Dict[str, Any], bot_instance: TradingBot
                     if not (0 <= v <= 1):
                         return f"Invalid percentage: {pct}. Use 0-100."
                     setattr(config, key, v)
+                    ConfigOverrideManager.save_override(key, v)
                     changes.append(f"  {key}={pct}%")
             if not changes:
                 return "No allocation params provided. Use theme_a_pct, theme_b_pct, theme_c_pct, moonshot_pct, cash_pct (0-100)."
-            return "Updated (this session):\n" + "\n".join(changes) + "\nTo make permanent, set in .env: THEME_A_TARGET=0.40 etc."
+            return (
+                "Updated and saved:\n" + "\n".join(changes) +
+                "\n\nChanges are now persistent across restarts."
+                "\nTo reset to .env defaults, delete data/config_overrides.json"
+            )
 
         if tool_name == "update_option_rules":
             if not _can_execute_trades(user_id):
                 return "Not allowed: your user ID is not in ALLOWED_TELEGRAM_USER_IDS."
+            from src.utils.config_override_manager import ConfigOverrideManager
             changes = []
             if arguments.get("dte_min") is not None:
                 v = int(arguments["dte_min"])
                 config.option_dte_min = v
+                ConfigOverrideManager.save_override("option_dte_min", v)
                 changes.append(f"  option_dte_min={v}")
             if arguments.get("dte_max") is not None:
                 v = int(arguments["dte_max"])
                 config.option_dte_max = v
+                ConfigOverrideManager.save_override("option_dte_max", v)
                 changes.append(f"  option_dte_max={v}")
             if arguments.get("strike_range_min") is not None:
                 v = float(arguments["strike_range_min"])
                 config.strike_range_min = v
+                ConfigOverrideManager.save_override("strike_range_min", v)
                 changes.append(f"  strike_range_min={v} (e.g. 1.0=ATM)")
             if arguments.get("strike_range_max") is not None:
                 v = float(arguments["strike_range_max"])
                 config.strike_range_max = v
+                ConfigOverrideManager.save_override("strike_range_max", v)
                 changes.append(f"  strike_range_max={v} (e.g. 1.10=10% OTM)")
             if not changes:
                 return "No option rules provided. Use dte_min, dte_max, strike_range_min, strike_range_max."
-            return "Updated (this session):\n" + "\n".join(changes) + "\nTo make permanent, set OPTION_DTE_MIN etc. in .env."
+            return (
+                "Updated and saved:\n" + "\n".join(changes) +
+                "\n\nChanges are now persistent across restarts."
+                "\nTo reset to .env defaults, delete data/config_overrides.json"
+            )
 
         if tool_name == "update_theme_symbols":
             if not _can_execute_trades(user_id):
                 return "Not allowed: your user ID is not in ALLOWED_TELEGRAM_USER_IDS."
+            from src.utils.config_override_manager import ConfigOverrideManager
             symbols = (arguments.get("symbols_comma_separated") or "").strip()
             if not symbols:
                 return "symbols_comma_separated is required (e.g. 'UMC,TE,AMPX')."
             config.theme_underlyings_csv = symbols
-            return f"Theme underlyings updated to: {config.theme_underlyings}. To make permanent, set THEME_UNDERLYINGS={symbols} in .env."
+            ConfigOverrideManager.save_override("theme_underlyings_csv", symbols)
+            return (
+                f"Theme underlyings updated and saved: {config.theme_underlyings}"
+                "\n\nChanges are now persistent across restarts."
+                "\nTo reset to .env defaults, delete data/config_overrides.json"
+            )
+
+        if tool_name == "get_config_overrides":
+            from src.utils.config_override_manager import ConfigOverrideManager
+            return ConfigOverrideManager.get_override_summary()
 
         if tool_name == "get_polymarket_odds":
             topic = (arguments.get("topic") or "").strip().lower()

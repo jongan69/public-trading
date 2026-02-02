@@ -133,6 +133,37 @@ class HighConvexityConfig(BaseSettings):
             return []
         return [int(x.strip()) for x in s.split(",") if x.strip()]
 
+    @classmethod
+    def apply_overrides(cls, config_instance: "HighConvexityConfig") -> "HighConvexityConfig":
+        """Apply config overrides from Telegram edits (REQ-013).
 
-# Global config instance
-config = HighConvexityConfig()
+        This is called after Pydantic loads .env values to allow
+        Telegram settings to override environment variables.
+
+        Args:
+            config_instance: Config instance with .env values loaded
+
+        Returns:
+            Config instance with overrides applied
+        """
+        try:
+            from src.utils.config_override_manager import ConfigOverrideManager
+            overrides = ConfigOverrideManager.load_overrides()
+
+            if overrides:
+                from loguru import logger
+                logger.info(f"Applying {len(overrides)} config overrides from Telegram")
+                for key, value in overrides.items():
+                    if hasattr(config_instance, key):
+                        setattr(config_instance, key, value)
+                        logger.debug(f"Override: {key}={value}")
+        except Exception as e:
+            # Don't fail startup if overrides can't load
+            from loguru import logger
+            logger.warning(f"Could not load config overrides: {e}")
+
+        return config_instance
+
+
+# Global config instance (with Telegram overrides applied)
+config = HighConvexityConfig.apply_overrides(HighConvexityConfig())
