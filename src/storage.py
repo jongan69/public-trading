@@ -1,7 +1,7 @@
 """SQLite database storage for trading bot."""
 import sqlite3
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from datetime import datetime, date, timedelta
 from loguru import logger
 import json
@@ -588,3 +588,62 @@ class StorageManager:
         if not cooldown_until:
             return False
         return datetime.now() < cooldown_until
+
+    # =====================================
+    # Proactive Alerts (REQ-014)
+    # =====================================
+
+    def get_pending_alerts(self) -> List[Dict[str, Any]]:
+        """Get pending alerts from bot_state.
+
+        Returns:
+            List of alert dictionaries
+        """
+        alerts_json = self.get_bot_state("pending_alerts")
+        if not alerts_json:
+            return []
+        try:
+            import json
+            return json.loads(alerts_json)
+        except Exception:
+            return []
+
+    def save_pending_alerts(self, alerts: List[Dict[str, Any]]):
+        """Save pending alerts to bot_state.
+
+        Args:
+            alerts: List of alert dictionaries to save
+        """
+        import json
+        self.set_bot_state("pending_alerts", json.dumps(alerts))
+
+    def clear_pending_alerts(self):
+        """Clear pending alerts from bot_state."""
+        self.set_bot_state("pending_alerts", None)
+
+    def mark_alert_triggered(self, alert_key: str):
+        """Mark an alert as triggered with current timestamp.
+
+        Args:
+            alert_key: Alert type identifier (e.g., 'kill_switch_warning', 'roll_warning_AAPL')
+        """
+        key = f"alert_last_triggered_{alert_key}"
+        self.set_bot_state(key, datetime.now().isoformat())
+
+    def get_alert_last_triggered(self, alert_key: str) -> Optional[datetime]:
+        """Get timestamp of last trigger for an alert type.
+
+        Args:
+            alert_key: Alert type identifier
+
+        Returns:
+            Datetime of last trigger, or None if never triggered
+        """
+        key = f"alert_last_triggered_{alert_key}"
+        value = self.get_bot_state(key)
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value)
+        except Exception:
+            return None

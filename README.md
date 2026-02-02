@@ -158,12 +158,16 @@ Then message your bot on Telegram. You can have full conversation about market n
 
 The repo uses the **do-work** skill for Claude Code task management: capture requests fast, process later.
 
-- **Capture**: `do work add dark mode to settings` or `do work the search is slow, add export button` — creates request files in `do-work/`.
+- **Capture**: `do work add ...` — creates request files; place or move pending REQs in `do-work/pending/`.
 - **Process**: `do work run` — triages and works through the queue (simple → implement; medium → explore then build; complex → plan, explore, build).
 - **Verify**: `do work verify` — checks captured REQs against original input.
 - **Cleanup**: `do work cleanup` — consolidates archive (runs automatically at end of work loop).
 
-Structure: `do-work/` (pending REQs), `do-work/user-requests/` (verbatim input per request), `do-work/working/` (in progress), `do-work/archive/` (completed). Skill is installed at `.agents/skills/do-work`.
+Structure: `do-work/pending/` (pending REQs), `do-work/user-requests/` (verbatim input per request), `do-work/working/` (in progress), `do-work/archive/` (completed). Skill is installed at `.agents/skills/do-work`.
+
+**Pending (in queue):** All pending REQs live in `do-work/pending/`: REQ-010 (universal accessibility feature map), REQ-013 (config persistence), REQ-014 (proactive alerts), REQ-015 (daily briefing), REQ-016 (export trades/performance), REQ-017 (product backlog). When you run `do work run`, process from here; when a REQ is completed, move it to `archive/<user-request>/`.
+
+**Completed (archived):** All completed REQs for a user request live under `do-work/archive/<user-request>/` (e.g. `archive/UR-001/`, `archive/UR-002/`). UR-002 completed: REQ-002 through REQ-009, REQ-011, REQ-012 (governance, execution tier, decision compression, transparency, emotional pressure, scenario engine, human control, learning loop, learning-loop persistence, cooldown headless). UR-001 completed: REQ-001 (market data hedge fund chat).
 
 ### Dry Run Mode
 
@@ -328,6 +332,37 @@ When you update config settings via Telegram (allocations, option rules, theme s
 **To force a specific value**: Set it in `.env` and delete `data/config_overrides.json`.
 
 **Best practice**: Use `.env` for initial setup and infrastructure settings. Use Telegram for dynamic strategy adjustments during trading.
+
+### Proactive Alerts (REQ-014)
+
+The bot proactively monitors risk thresholds and warns you before they trigger, giving you time to act.
+
+**Alert Types**:
+1. **Kill Switch Warning**: Drawdown approaching -25% trigger (default warning at -20%)
+2. **Roll Needed**: Option positions approaching 60 DTE roll trigger (default warning at 67 DTE)
+3. **Cap Approaching**: Moonshot allocation approaching 30% cap (default warning at 28%)
+
+**How Alerts Work**:
+- Checked during daily run (logged to console)
+- Stored in database for Telegram delivery
+- Retrieved via "show alerts" or automatically during portfolio analysis
+- Cleared after viewing to prevent duplicates
+
+**Alert Configuration** (`.env` or Telegram):
+- `PROACTIVE_ALERTS_ENABLED`: Enable/disable alerts (default: true)
+- `KILL_SWITCH_WARNING_PCT`: Drawdown warning threshold (default: 0.20 = -20%)
+- `ROLL_WARNING_DAYS_BEFORE`: Days before roll trigger to warn (default: 7)
+- `CAP_WARNING_THRESHOLD_PCT`: Allocation warning threshold (default: 0.28 = 28%)
+- `ALERT_COALESCING_HOURS`: Min hours between duplicate alerts (default: 24)
+
+**Viewing Alerts**:
+- Ask the bot: "show alerts", "any warnings?", or "check for alerts"
+- Alerts automatically shown during "full portfolio analysis"
+- Check daily run logs for `⚠️` warnings
+
+**Disabling Alerts**: Set `PROACTIVE_ALERTS_ENABLED=false` in `.env` to disable all alerts.
+
+**Alert Coalescing**: Each alert type is limited to once per 24 hours (configurable via `ALERT_COALESCING_HOURS`). This prevents spam while ensuring you see critical warnings daily.
 
 ## Database
 

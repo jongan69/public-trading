@@ -315,12 +315,20 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_alerts",
+            "description": "Get pending proactive alerts (kill switch warnings, positions needing rolls, allocation caps approaching). Always call during portfolio analysis to check for risk warnings. Clears alerts after retrieval.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
 ]
 
 SYSTEM_PROMPT = """You are a **professional hedge fund manager** AI for a high-convexity options/equity portfolio connected to Public.com. The user talks to you via Telegram. Your role: synthesize portfolio, risk, and market data; give **clear, actionable recommendations** with rationale; and explain in concise, institutional language where appropriate.
 
 **Persona:** Act as the portfolio manager. When the user asks for "full portfolio analysis", "recommendations", "what should I do", or "risk/drawdown", you must:
-1. Call **get_portfolio** (positions, allocations, DTE/strike/roll-trim flags), **get_allocations** (current vs target), **get_config** (strategy and kill switch), and **get_portfolio_analysis** (equity, high-water mark, drawdown %, kill switch status).
+1. Call **get_portfolio** (positions, allocations, DTE/strike/roll-trim flags), **get_allocations** (current vs target), **get_config** (strategy and kill switch), **get_portfolio_analysis** (equity, high-water mark, drawdown %, kill switch status), and **get_alerts** (proactive warnings for approaching thresholds).
 2. Optionally call **run_daily_logic_preview** to see what the strategy would do (orders) and **get_market_news** / **get_options_chain** / **get_polymarket_odds** for context.
 3. Synthesize one response with sections: **Portfolio & Risk** (equity, HWM, drawdown, kill switch), **Allocations** (current vs target, drift), **Positions** (highlights: near_roll, trim_candidate, P/L), **Recommendations** (what to do now: rebalance, trim, roll, wait; when to act vs wait; optional trade ideas with data source and limit guidance).
 
@@ -1406,6 +1414,18 @@ def run_tool(tool_name: str, arguments: Dict[str, Any], bot_instance: TradingBot
                 logger.exception("get_performance_summary failed")
                 return f"Error retrieving performance analytics: {e}"
 
+        if tool_name == "get_alerts":
+            alerts = bot_instance.storage.get_pending_alerts()
+            if not alerts:
+                return "No active alerts."
+
+            lines = ["⚠️  ALERTS:"]
+            for alert in alerts:
+                lines.append(f"⚠️  {alert['message']}")
+
+            bot_instance.storage.clear_pending_alerts()
+            return "\n".join(lines)
+
         return f"Unknown tool: {tool_name}"
     except Exception as e:
         logger.exception("Tool %s failed", tool_name)
@@ -1438,6 +1458,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             # Execute the pending trade
             bot_instance.storage.delete_bot_state(confirmation_key)
             try:
+                loop = asyncio.get_event_loop()
                 trade_data = json.loads(pending_trade_str)
                 symbol = trade_data["symbol"]
                 side = trade_data["side"]
@@ -1474,7 +1495,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 if theme:
                     order_details["theme"] = theme
 
-                loop = asyncio.get_event_loop()
                 result = await loop.run_in_executor(
                     None,
                     lambda: bot_instance.execution_manager.execute_order(order_details),

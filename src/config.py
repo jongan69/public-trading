@@ -116,6 +116,13 @@ class HighConvexityConfig(BaseSettings):
     cooldown_loss_threshold_usd: float = Field(500.0, env="COOLDOWN_LOSS_THRESHOLD_USD")  # $500 loss triggers cool-down
     cooldown_duration_minutes: int = Field(60, env="COOLDOWN_DURATION_MINUTES")  # Block trades for 60 minutes
 
+    # Proactive Alerts (REQ-014)
+    proactive_alerts_enabled: bool = Field(True, env="PROACTIVE_ALERTS_ENABLED")
+    kill_switch_warning_pct: float = Field(0.20, env="KILL_SWITCH_WARNING_PCT")
+    roll_warning_days_before: int = Field(7, env="ROLL_WARNING_DAYS_BEFORE")
+    cap_warning_threshold_pct: float = Field(0.28, env="CAP_WARNING_THRESHOLD_PCT")
+    alert_coalescing_hours: int = Field(24, env="ALERT_COALESCING_HOURS")
+
     # Telegram + AI (optional; required when running Telegram bot)
     telegram_bot_token: str = Field("", env="TELEGRAM_BOT_TOKEN")
     openai_api_key: str = Field("", env="OPENAI_API_KEY")

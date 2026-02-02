@@ -165,7 +165,7 @@ class TradingBot:
             # Save snapshots
             equity = self.portfolio_manager.get_equity()
             self.storage.save_config_snapshot(equity)
-            
+
             allocations = self.portfolio_manager.get_current_allocations()
             self.storage.save_portfolio_snapshot({
                 "equity": equity,
@@ -173,7 +173,21 @@ class TradingBot:
                 "cash": self.portfolio_manager.get_cash(),
                 "allocations": allocations,
             })
-            
+
+            # Check proactive alerts (REQ-014)
+            if config.proactive_alerts_enabled:
+                from src.alerts import AlertManager
+                alert_manager = AlertManager(self.storage, self.portfolio_manager)
+                alerts = alert_manager.check_all_alerts()
+
+                if alerts:
+                    # Log warnings
+                    for alert in alerts:
+                        logger.warning(f"⚠️  {alert['message']}")
+
+                    # Store for Telegram delivery
+                    self.storage.save_pending_alerts(alerts)
+
             # Run strategy logic
             orders = self.strategy.run_daily_logic()
 
