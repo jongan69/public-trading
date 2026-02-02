@@ -457,6 +457,39 @@ Total equity: $142,857
 - Monitor cash reserves as percentage of portfolio
 - Compare asset class allocation over time
 
+### Strategy Math and Risk Analysis (REQ-019)
+
+Quantitative tools for analyzing trade strategies: expected value, Kelly fraction for position sizing, and Monte Carlo risk-of-ruin simulation.
+
+**What It Provides**:
+- **Expected Value**: Calculate profit expectation per trade based on win rate and avg win/loss
+- **Kelly Fraction**: Optimal position sizing recommendation (capped at 25% for safety)
+- **Risk of Ruin**: Simulate probability of 30%+ drawdown via 10,000 Monte Carlo trials
+
+**Telegram Tools**:
+- Ask: "What's the expected value of a 55% win rate, 3% avg win, 3% avg loss strategy?"
+- Ask: "Calculate Kelly fraction for my strategy"
+- Ask: "What's my risk of ruin at 2% risk per trade with $10k capital?"
+
+**Example Output**:
+```
+Expected value: +0.75% per trade
+Kelly fraction: 12.5% (capped at 25%)
+Risk of ruin (30% drawdown): 2.3% over 10,000 trials
+```
+
+**Preset Strategies**:
+- **Daily 3% Grind**: 58% win rate, 3% avg win/loss, 220 trades/year
+- **High Conviction**: 40% win rate, 40% avg win, 15% avg loss, 10 trades/year
+
+**How It Works**: Pure mathematical calculations with no execution logic. Uses Monte Carlo simulation (10,000 trials of 1,000 trades each) for risk of ruin. Kelly fraction is conservatively capped at 25% to prevent over-leveraging.
+
+**Use Cases**:
+- Evaluate strategy profitability before committing capital
+- Determine optimal position sizing based on strategy stats
+- Assess long-term survival probability under different risk levels
+- Compare multiple strategies quantitatively
+
 ## Database
 
 The bot uses SQLite to store:

@@ -61,6 +61,56 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "strategy_expected_value",
+            "description": "Calculate expected value (EV) for a strategy given win rate, avg win, and avg loss. Use when user asks about profitability, edge, or EV of a strategy.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "win_rate": {"type": "number", "description": "Win rate as decimal (e.g., 0.58 = 58%)"},
+                    "avg_win": {"type": "number", "description": "Average win as fraction (e.g., 0.03 = 3%)"},
+                    "avg_loss": {"type": "number", "description": "Average loss as fraction (e.g., 0.03 = 3%)"},
+                    "preset_name": {"type": "string", "description": "Optional preset name (e.g., 'daily_3pct_grind', 'high_conviction')"}
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "strategy_kelly_fraction",
+            "description": "Calculate Kelly fraction for optimal position sizing given strategy stats. Returns recommended risk fraction (capped at 25%). Use for sizing guidance.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "win_rate": {"type": "number", "description": "Win rate as decimal (e.g., 0.58 = 58%)"},
+                    "avg_win": {"type": "number", "description": "Average win as fraction (e.g., 0.03 = 3%)"},
+                    "avg_loss": {"type": "number", "description": "Average loss as fraction (e.g., 0.03 = 3%)"},
+                    "preset_name": {"type": "string", "description": "Optional preset name (e.g., 'daily_3pct_grind')"}
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "strategy_risk_of_ruin",
+            "description": "Simulate risk of ruin via Monte Carlo (10k trials). Returns probability of balance falling to ≤30% of starting capital. Use when discussing risk management or position sizing.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "win_rate": {"type": "number", "description": "Win rate as decimal (e.g., 0.55 = 55%)"},
+                    "win": {"type": "number", "description": "Dollar win per trade (e.g., 100.0)"},
+                    "loss": {"type": "number", "description": "Dollar loss per trade (e.g., 100.0)"},
+                    "capital": {"type": "number", "description": "Starting capital (e.g., 10000)"},
+                    "risk_per_trade": {"type": "number", "description": "Dollar risk per trade (e.g., 200)"}
+                },
+                "required": ["win_rate", "win", "loss", "capital", "risk_per_trade"]
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "run_daily_logic_preview",
             "description": "Run the strategy logic in dry-run mode and return the list of orders that WOULD be placed (no real trades). Use for 'what would you do', 'preview', 'simulate', or 'test strategy'.",
             "parameters": {"type": "object", "properties": {}},
@@ -733,6 +783,73 @@ def run_tool(tool_name: str, arguments: Dict[str, Any], bot_instance: TradingBot
             except Exception as e:
                 logger.exception("get_allocations_by_type failed")
                 return f"Error retrieving allocation by type: {e}"
+
+        if tool_name == "strategy_expected_value":
+            try:
+                from src.utils.strategy_math import StrategyProfile, expected_value
+                from src.utils.strategy_presets import get_preset
+
+                preset_name = arguments.get("preset_name")
+                if preset_name:
+                    profile = get_preset(preset_name)
+                    if not profile:
+                        return f"Preset '{preset_name}' not found. Available: daily_3pct_grind, high_conviction"
+                else:
+                    profile = StrategyProfile(
+                        name="Custom",
+                        win_rate=float(arguments["win_rate"]),
+                        avg_win=float(arguments["avg_win"]),
+                        avg_loss=float(arguments["avg_loss"]),
+                        trades_per_year=220  # default
+                    )
+
+                ev = expected_value(profile)
+                return f"Expected value for {profile.name}: {ev*100:.2f}% per trade"
+            except Exception as e:
+                logger.exception("strategy_expected_value failed")
+                return f"Error calculating EV: {e}"
+
+        if tool_name == "strategy_kelly_fraction":
+            try:
+                from src.utils.strategy_math import StrategyProfile, kelly_fraction
+                from src.utils.strategy_presets import get_preset
+
+                preset_name = arguments.get("preset_name")
+                if preset_name:
+                    profile = get_preset(preset_name)
+                    if not profile:
+                        return f"Preset '{preset_name}' not found. Available: daily_3pct_grind, high_conviction"
+                else:
+                    profile = StrategyProfile(
+                        name="Custom",
+                        win_rate=float(arguments["win_rate"]),
+                        avg_win=float(arguments["avg_win"]),
+                        avg_loss=float(arguments["avg_loss"]),
+                        trades_per_year=220  # default
+                    )
+
+                kelly = kelly_fraction(profile)
+                return f"Kelly fraction for {profile.name}: {kelly*100:.1f}% (capped at 25%)"
+            except Exception as e:
+                logger.exception("strategy_kelly_fraction failed")
+                return f"Error calculating Kelly: {e}"
+
+        if tool_name == "strategy_risk_of_ruin":
+            try:
+                from src.utils.strategy_math import risk_of_ruin
+
+                ror = risk_of_ruin(
+                    win_rate=float(arguments["win_rate"]),
+                    win=float(arguments["win"]),
+                    loss=float(arguments["loss"]),
+                    capital=float(arguments["capital"]),
+                    risk_per_trade=float(arguments["risk_per_trade"])
+                )
+
+                return f"Risk of ruin (30% drawdown): {ror*100:.1f}% over 10,000 simulated trials"
+            except Exception as e:
+                logger.exception("strategy_risk_of_ruin failed")
+                return f"Error simulating risk of ruin: {e}"
 
         if tool_name == "get_last_actions":
             limit = min(int(arguments.get("limit", 10) or 10), 50)
