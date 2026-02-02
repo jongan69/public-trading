@@ -438,7 +438,85 @@ class PortfolioManager:
             "moonshot": moonshot_value / equity,
             "cash": cash / equity,
         }
-    
+
+    def _classify_asset_type(self, instrument_type: InstrumentType) -> str:
+        """Map InstrumentType to asset class bucket.
+
+        Args:
+            instrument_type: Public.com API instrument type
+
+        Returns:
+            Asset class: "equity", "crypto", "bonds", "alt"
+        """
+        if instrument_type == InstrumentType.CRYPTO:
+            return "crypto"
+        elif instrument_type in (InstrumentType.BOND, InstrumentType.TREASURY):
+            return "bonds"
+        elif instrument_type == InstrumentType.ALT:
+            return "alt"
+        else:  # EQUITY, OPTION, INDEX, MULTI_LEG_INSTRUMENT
+            return "equity"
+
+    def get_allocations_by_type(self) -> Dict[str, Dict[str, float]]:
+        """Calculate portfolio allocation by asset type.
+
+        Returns allocation split across equity, crypto, bonds, alt, and cash.
+        Similar to get_current_allocations() but groups by asset class instead of theme.
+
+        Returns:
+            Dict with percentages and dollar values per asset type:
+            {
+                "equity": {"pct": 0.70, "value": 100000.0},
+                "crypto": {"pct": 0.15, "value": 21500.0},
+                "bonds": {"pct": 0.0, "value": 0.0},
+                "alt": {"pct": 0.0, "value": 0.0},
+                "cash": {"pct": 0.15, "value": 21500.0}
+            }
+        """
+        equity = self.get_equity()
+
+        # Handle zero equity
+        if equity == 0:
+            return {
+                "equity": {"pct": 0.0, "value": 0.0},
+                "crypto": {"pct": 0.0, "value": 0.0},
+                "bonds": {"pct": 0.0, "value": 0.0},
+                "alt": {"pct": 0.0, "value": 0.0},
+                "cash": {"pct": 0.0, "value": 0.0},
+            }
+
+        # Initialize type value accumulators
+        type_values = {
+            "equity": 0.0,
+            "crypto": 0.0,
+            "bonds": 0.0,
+            "alt": 0.0,
+        }
+
+        # Sum market values per asset type
+        for position in self.positions.values():
+            asset_type = self._classify_asset_type(position.instrument_type)
+            market_value = position.get_market_value(self.get_position_price(position))
+            type_values[asset_type] += market_value
+
+        # Add cash
+        cash = self.get_cash()
+
+        # Build result with both percentages and dollar values
+        result = {}
+        for asset_type, value in type_values.items():
+            result[asset_type] = {
+                "pct": value / equity,
+                "value": value
+            }
+
+        result["cash"] = {
+            "pct": cash / equity,
+            "value": cash
+        }
+
+        return result
+
     def get_target_allocations(self) -> Dict[str, float]:
         """Get target allocations.
         

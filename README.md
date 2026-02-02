@@ -424,6 +424,39 @@ report_path = export_manager.generate_performance_report(days=90)
 print(f"Report generated: {report_path}")
 ```
 
+### Multi-Asset Allocation by Type (REQ-018)
+
+View portfolio allocation by asset class (equity, crypto, bonds, alt, cash) in addition to theme-based allocation.
+
+**What It Shows**:
+- **Equity**: Stocks, options, index funds, multi-leg spreads
+- **Crypto**: Cryptocurrency positions (if supported by broker)
+- **Bonds**: Bonds and treasuries
+- **Alt**: Alternative assets
+- **Cash**: Available cash
+
+**Telegram Tool**:
+- Ask: "Show me allocation by asset type"
+- Ask: "What percentage is in crypto vs equity?"
+- Tool calls `get_allocations_by_type()` to show breakdown
+
+**Example Output**:
+```
+Asset allocation by type:
+  equity: 70.0% ($100,000)
+  cash: 30.0% ($42,857)
+
+Total equity: $142,857
+```
+
+**How It Works**: The system uses the `instrument_type` field from Public.com API (already present in every position) to classify positions into asset classes. Options are counted as equity (since they're derivatives of equities). Cash is tracked separately via the portfolio API.
+
+**Use Cases**:
+- Understand true diversification across asset classes
+- Assess crypto vs equity exposure
+- Monitor cash reserves as percentage of portfolio
+- Compare asset class allocation over time
+
 ## Database
 
 The bot uses SQLite to store:

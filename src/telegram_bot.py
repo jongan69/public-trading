@@ -50,6 +50,17 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "get_allocations_by_type",
+            "description": "Get portfolio allocation by asset type (equity, crypto, bonds, alt, cash) instead of by theme. Shows what percentage of capital is in each asset class. Use this when user asks about asset allocation or diversification across asset types.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "run_daily_logic_preview",
             "description": "Run the strategy logic in dry-run mode and return the list of orders that WOULD be placed (no real trades). Use for 'what would you do', 'preview', 'simulate', or 'test strategy'.",
             "parameters": {"type": "object", "properties": {}},
@@ -694,6 +705,34 @@ def run_tool(tool_name: str, arguments: Dict[str, Any], bot_instance: TradingBot
             for k in ["theme_a", "theme_b", "theme_c", "moonshot", "cash"]:
                 lines.append(f"  {k}: {current[k]*100:.1f}% -> {target[k]*100:.1f}%")
             return "\n".join(lines)
+
+        if tool_name == "get_allocations_by_type":
+            try:
+                bot_instance.portfolio_manager.refresh_portfolio()
+                by_type = bot_instance.portfolio_manager.get_allocations_by_type()
+                equity = bot_instance.portfolio_manager.get_equity()
+
+                lines = ["Asset allocation by type:"]
+
+                # Sort by value descending
+                sorted_types = sorted(
+                    by_type.items(),
+                    key=lambda x: x[1]["value"],
+                    reverse=True
+                )
+
+                for asset_type, data in sorted_types:
+                    pct = data["pct"] * 100
+                    value = data["value"]
+                    if pct > 0.1:  # Only show if > 0.1%
+                        lines.append(f"  {asset_type}: {pct:.1f}% (${value:,.2f})")
+
+                lines.append(f"\nTotal equity: ${equity:,.2f}")
+
+                return "\n".join(lines)
+            except Exception as e:
+                logger.exception("get_allocations_by_type failed")
+                return f"Error retrieving allocation by type: {e}"
 
         if tool_name == "get_last_actions":
             limit = min(int(arguments.get("limit", 10) or 10), 50)
