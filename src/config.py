@@ -1,7 +1,7 @@
 """Configuration for high-convexity portfolio trading bot."""
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, computed_field
-from typing import List
+from typing import List, Optional
 
 
 class HighConvexityConfig(BaseSettings):
@@ -17,6 +17,8 @@ class HighConvexityConfig(BaseSettings):
     
     # API Configuration
     api_secret_key: str = Field(..., validation_alias="PUBLIC_SECRET_KEY")
+    # Account number (optional). When set, used in headless/deploy; otherwise interactive or data/bot_config.json.
+    account_number: Optional[str] = Field(None, env="PUBLIC_ACCOUNT_NUMBER")
     
     # Strategy Universe (env: comma-separated "UMC,TE,AMPX")
     theme_underlyings_csv: str = Field(

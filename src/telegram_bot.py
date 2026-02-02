@@ -145,7 +145,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_last_actions",
-            "description": "Get last N executed orders with rationale (why each trade was placed). Use when user asks what was done recently, last trades, or trade history with reasons.",
+            "description": "Get last N executed orders with rationale (why each trade was placed). Use when user asks about previous trades, what was done recently, last trades, trade history, or 'what did I buy/sell'—with reasons.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -367,7 +367,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_performance_summary",
-            "description": "Get performance analytics: P&L by theme/moonshot, roll analysis, execution quality (slippage, favorable fills). Use when user asks about performance, what's working, trade quality, or wants to review results. Read-only analytics—does not change strategy.",
+            "description": "Get performance analytics: P&L by theme/moonshot, roll analysis, execution quality (slippage, favorable fills). Use when user asks about trading performance, how am I doing, previous trade results, win rate, P&L, what's working, or wants to review results. Read-only—does not change strategy.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -447,9 +447,9 @@ You are fully capable of:
 
 **Scenario analysis:** Use scenario tools to answer "How much should I hold?" with concrete numbers. Available tools: get_scenario(symbol, price_points) for current position analysis at different prices; what_if_position(symbol, quantity, price_points) for hypothetical position modeling; option_payoff_analysis(osi_symbol) for option payoff at expiration. Use when users ask "What if GME goes to $60?", "How much risk am I taking?", or want position sizing guidance.
 
-**Performance analytics (learning loop):** You have access to performance data via get_performance_summary (P&L by theme, roll analysis, execution quality). Use this to inform discussion and identify what's working. CRITICAL CONSTRAINTS: (1) Never suggest removing or loosening governance rules (kill switch, max position size, cash buffer, no margin). (2) Never suggest increasing position size, leverage, or risk after losses—only de-risking is allowed when drawdown is high. (3) Never invent new strategies or change core strategy logic autonomously—human decides on strategy changes. (4) Performance data is for transparency and informed discussion only; it does not authorize autonomous strategy modification.
+**Performance analytics (learning loop):** You have access to performance data via get_performance_summary (P&L by theme, roll analysis, execution quality) and get_last_actions (previous trades with rationale). When the user asks about trading performance, previous trades, how they're doing, or wants to talk about their results, call get_performance_summary and/or get_last_actions and use the data to inform discussion and identify what's working. CRITICAL CONSTRAINTS: (1) Never suggest removing or loosening governance rules (kill switch, max position size, cash buffer, no margin). (2) Never suggest increasing position size, leverage, or risk after losses—only de-risking is allowed when drawdown is high. (3) Never invent new strategies or change core strategy logic autonomously—human decides on strategy changes. (4) Performance data is for transparency and informed discussion only; it does not authorize autonomous strategy modification.
 
-Tools: get_portfolio, get_portfolio_analysis, get_allocations, run_daily_logic_preview, run_daily_logic_and_execute, place_manual_trade, get_config, set_dry_run, get_market_news, get_option_expirations, get_options_chain, get_polymarket_odds, get_scenario, what_if_position, option_payoff_analysis, get_performance_summary, update_*.
+Tools: get_portfolio, get_portfolio_analysis, get_allocations, get_last_actions, get_performance_summary, run_daily_logic_preview, run_daily_logic_and_execute, place_manual_trade, get_config, set_dry_run, get_market_news, get_option_expirations, get_options_chain, get_polymarket_odds, get_scenario, what_if_position, option_payoff_analysis, update_*.
 
 Never make up data—use the tools. For trades, confirm and summarize.
 

@@ -1,5 +1,6 @@
 """Account selection and local storage management."""
 import json
+import sys
 from typing import Optional, List, Dict
 from pathlib import Path
 from loguru import logger
@@ -90,14 +91,18 @@ class AccountManager:
     
     @staticmethod
     def select_account_interactive(api_secret_key: str) -> Optional[str]:
-        """Interactively select an account.
+        """Interactively select an account. No-op if stdin is not a TTY (e.g. headless deploy).
         
         Args:
             api_secret_key: API secret key
             
         Returns:
-            Selected account number or None if cancelled
+            Selected account number or None if cancelled or non-interactive
         """
+        if not sys.stdin.isatty():
+            logger.warning("Cannot prompt for account selection: not running in a TTY (headless). Set PUBLIC_ACCOUNT_NUMBER.")
+            return None
+        
         # Try to get saved account first
         saved_account = AccountManager.get_saved_account()
         

@@ -1,6 +1,7 @@
 """Tests for AccountManager."""
 import pytest
 import json
+import sys
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 from src.utils.account_manager import AccountManager, CONFIG_FILE
@@ -68,48 +69,61 @@ def test_list_accounts_error(temp_config_file):
         assert accounts == []
 
 
-def test_select_account_interactive_no_accounts(temp_config_file, monkeypatch):
-    """Test interactive selection with no accounts."""
-    with patch('src.utils.account_manager.AccountManager.list_accounts') as mock_list:
-        mock_list.return_value = []
-        
-        with patch('builtins.input', return_value=""):
+def test_select_account_interactive_non_tty_returns_none(temp_config_file):
+    """When not a TTY (e.g. headless deploy), do not prompt; return None."""
+    with patch.object(sys.stdin, "isatty", return_value=False):
+        with patch('src.utils.account_manager.AccountManager.list_accounts') as mock_list:
+            mock_list.return_value = [{"account_id": "ACC1", "account_type": "CASH"}]
             result = AccountManager.select_account_interactive("test_key")
             assert result is None
+            mock_list.assert_not_called()  # We return before listing in non-TTY
+
+
+def test_select_account_interactive_no_accounts(temp_config_file, monkeypatch):
+    """Test interactive selection with no accounts."""
+    with patch.object(sys.stdin, "isatty", return_value=True):
+        with patch('src.utils.account_manager.AccountManager.list_accounts') as mock_list:
+            mock_list.return_value = []
+            
+            with patch('builtins.input', return_value=""):
+                result = AccountManager.select_account_interactive("test_key")
+                assert result is None
 
 
 def test_select_account_interactive_menu_selection(temp_config_file, monkeypatch):
     """Test interactive selection via menu."""
-    with patch('src.utils.account_manager.AccountManager.list_accounts') as mock_list:
-        mock_list.return_value = [
-            {"account_id": "ACC1", "account_type": "CASH"},
-            {"account_id": "ACC2", "account_type": "MARGIN"}
-        ]
-        
-        with patch('builtins.input', return_value="1"):
-            with patch('builtins.print'):  # Suppress print output
-                result = AccountManager.select_account_interactive("test_key")
-                assert result == "ACC1"
-                
-                # Verify account was saved
-                saved = AccountManager.get_saved_account()
-                assert saved == "ACC1"
+    with patch.object(sys.stdin, "isatty", return_value=True):
+        with patch('src.utils.account_manager.AccountManager.list_accounts') as mock_list:
+            mock_list.return_value = [
+                {"account_id": "ACC1", "account_type": "CASH"},
+                {"account_id": "ACC2", "account_type": "MARGIN"}
+            ]
+            
+            with patch('builtins.input', return_value="1"):
+                with patch('builtins.print'):  # Suppress print output
+                    result = AccountManager.select_account_interactive("test_key")
+                    assert result == "ACC1"
+                    
+                    # Verify account was saved
+                    saved = AccountManager.get_saved_account()
+                    assert saved == "ACC1"
 
 
 def test_select_account_interactive_manual_entry(temp_config_file, monkeypatch):
     """Test interactive selection with manual entry."""
-    with patch('src.utils.account_manager.AccountManager.list_accounts') as mock_list:
-        mock_list.return_value = [
-            {"account_id": "ACC1", "account_type": "CASH"}
-        ]
-        
-        # Simulate: user enters "0" for manual, then "MANUAL123"
-        input_values = iter(["0", "MANUAL123"])
-        with patch('builtins.input', lambda _: next(input_values)):
-            with patch('builtins.print'):  # Suppress print output
-                result = AccountManager.select_account_interactive("test_key")
-                # The function should return the manual entry
-                assert result == "MANUAL123"
-                # Verify account was saved
-                saved = AccountManager.get_saved_account()
-                assert saved == "MANUAL123"
+    with patch.object(sys.stdin, "isatty", return_value=True):
+        with patch('src.utils.account_manager.AccountManager.list_accounts') as mock_list:
+            mock_list.return_value = [
+                {"account_id": "ACC1", "account_type": "CASH"}
+            ]
+            
+            # Simulate: user enters "0" for manual, then "MANUAL123"
+            input_values = iter(["0", "MANUAL123"])
+            with patch('builtins.input', lambda _: next(input_values)):
+                with patch('builtins.print'):  # Suppress print output
+                    result = AccountManager.select_account_interactive("test_key")
+                    # The function should return the manual entry
+                    assert result == "MANUAL123"
+                    # Verify account was saved
+                    saved = AccountManager.get_saved_account()
+                    assert saved == "MANUAL123"

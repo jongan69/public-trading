@@ -34,11 +34,16 @@ class TradingBot:
         logger.info("High-Convexity Portfolio Trading Bot")
         logger.info("=" * 70)
         
-        # Get or select account number
+        # Get or select account number (env > saved file > interactive only if TTY)
         if account_number is None:
-            account_number = AccountManager.get_saved_account()
+            account_number = config.account_number or AccountManager.get_saved_account()
         
         if account_number is None:
+            if not sys.stdin.isatty():
+                raise ValueError(
+                    "No account number available in headless environment. "
+                    "Set PUBLIC_ACCOUNT_NUMBER in your environment (e.g. Render Secret) or run once interactively to save to data/bot_config.json."
+                )
             logger.info("No saved account found. Please select an account.")
             account_number = AccountManager.select_account_interactive(config.api_secret_key)
             if account_number is None:
