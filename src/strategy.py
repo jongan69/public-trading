@@ -217,11 +217,13 @@ class HighConvexityStrategy:
                     trim_qty = min(int(position.quantity * trim_pct), position.quantity)
                     if trim_qty <= 0:
                         continue
+                    rationale = f"Trim moonshot: current {moonshot_pct*100:.1f}%, cap {config.moonshot_max*100:.0f}%"
                     return {
                         "symbol": position.symbol,
                         "quantity": trim_qty,
                         "action": "SELL",
                         "price": float(sell_price),
+                        "rationale": rationale,
                     }
         
         return None
@@ -281,6 +283,7 @@ class HighConvexityStrategy:
                 quantity = int(need / contract_price)
                 
                 if quantity > 0:
+                    rationale = f"Rebalance: {theme_name} below target (add {underlying})"
                     orders.append({
                         "action": "BUY",
                         "symbol": contract["osi_symbol"],
@@ -288,6 +291,7 @@ class HighConvexityStrategy:
                         "price": contract_price,
                         "underlying": underlying,
                         "contract_info": contract,
+                        "rationale": rationale,
                     })
             
             elif need < -100:  # Need to reduce position
@@ -300,11 +304,13 @@ class HighConvexityStrategy:
                     
                     if position_value > abs(need):
                         close_qty = int(abs(need) / current_price)
+                        rationale = f"Rebalance: {theme_name} above target (reduce)"
                         orders.append({
                             "action": "SELL",
                             "symbol": position.symbol,
                             "quantity": close_qty,
                             "price": current_price,
+                            "rationale": rationale,
                         })
                         break
         
@@ -331,12 +337,18 @@ class HighConvexityStrategy:
             # Check take profit
             should_tp, tp_qty = self.should_take_profit(position, current_price)
             if should_tp and tp_qty and sell_price and sell_price > 0:
+                pnl_pct = position.get_pnl_pct(current_price)
+                if tp_qty >= position.quantity:
+                    rationale = f"Take profit: +{pnl_pct:.0f}% (close all)"
+                else:
+                    rationale = f"Take profit: +{pnl_pct:.0f}% (close {tp_qty})"
                 orders.append({
                     "action": "SELL",
                     "symbol": position.symbol,
                     "quantity": tp_qty,
                     "price": sell_price,
                     "reason": "TAKE_PROFIT",
+                    "rationale": rationale,
                 })
                 continue
             elif should_tp and tp_qty:
@@ -345,12 +357,18 @@ class HighConvexityStrategy:
             # Check stop loss
             if self.should_stop_loss(position, current_price):
                 if sell_price and sell_price > 0:
+                    pnl_pct = position.get_pnl_pct(current_price)
+                    dte = position.get_dte() if position.instrument_type == InstrumentType.OPTION else None
+                    rationale = f"Stop loss: pnl {pnl_pct:.0f}%"
+                    if dte is not None:
+                        rationale += f", DTE={dte}"
                     orders.append({
                         "action": "SELL",
                         "symbol": position.symbol,
                         "quantity": position.quantity,
                         "price": sell_price,
                         "reason": "STOP_LOSS",
+                        "rationale": rationale,
                     })
                     continue
                 logger.warning(f"Skipping stop loss for {position.symbol}: no valid sell price (bid/last)")
@@ -358,6 +376,10 @@ class HighConvexityStrategy:
             # Check roll
             should_roll, new_contract = self.should_roll(position, current_price)
             if should_roll and new_contract and sell_price and sell_price > 0:
+                dte = position.get_dte() or 0
+                underlying = position.underlying or "option"
+                rationale_close = f"Roll: {underlying} DTE={dte} < {config.roll_trigger_dte} (close)"
+                rationale_open = f"Roll: {underlying} (open new)"
                 # Close current (use bid for options)
                 orders.append({
                     "action": "SELL",
@@ -365,6 +387,7 @@ class HighConvexityStrategy:
                     "quantity": position.quantity,
                     "price": sell_price,
                     "reason": "ROLL_CLOSE",
+                    "rationale": rationale_close,
                 })
                 # Open new
                 orders.append({
@@ -375,6 +398,7 @@ class HighConvexityStrategy:
                     "underlying": position.underlying,
                     "contract_info": new_contract,
                     "reason": "ROLL_OPEN",
+                    "rationale": rationale_open,
                 })
             elif should_roll and new_contract:
                 logger.warning(f"Skipping roll for {position.symbol}: no valid sell price (bid/last)")

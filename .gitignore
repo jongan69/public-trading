@@ -54,5 +54,41 @@ htmlcov/
 data/
 backups/
 
-# Environment variables
-.env
+# Agent skill symlinks (skills CLI installs to all agents; we only use Cursor + .agents)
+.adal/
+.agent/
+.augment/
+.claude/
+.cline/
+.codebuddy/
+.codex/
+.commandcode/
+.continue/
+.crush/
+.factory/
+.gemini/
+.goose/
+.iflow/
+.junie/
+.kilocode/
+.kiro/
+.kode/
+.mcpjam/
+.mux/
+.neovate/
+.openclaude/
+.opencode/
+.openhands/
+.pi/
+.pochi/
+.qoder/
+.qwen/
+.roo/
+.trae/
+.vibe/
+.windsurf/
+.zencoder/
+
+# Empty dirs from skills CLI (we use .agents + .cursor only)
+.github/
+skills/

@@ -48,8 +48,10 @@ class TradingBot:
         self.client = TradingClient(account_number=account_number)
         self.data_manager = MarketDataManager(self.client)
         self.portfolio_manager = PortfolioManager(self.client, self.data_manager)
-        self.execution_manager = ExecutionManager(self.client, self.portfolio_manager)
         self.storage = StorageManager()
+        self.execution_manager = ExecutionManager(
+            self.client, self.portfolio_manager, storage=self.storage
+        )
         self.strategy = HighConvexityStrategy(
             self.portfolio_manager,
             self.data_manager,

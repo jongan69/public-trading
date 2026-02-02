@@ -2,10 +2,12 @@
 import re
 from typing import Dict, List, Optional
 from decimal import Decimal
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 import uuid
 import time
 from loguru import logger
+
+from src.utils.trading_hours import is_after_same_day_option_cutoff_et
 
 from public_api_sdk import (
     OrderRequest,
@@ -23,6 +25,24 @@ from public_api_sdk import (
 from src.config import config
 from src.client import TradingClient
 from src.portfolio import PortfolioManager
+from src.utils.governance import check_governance
+
+
+def _parse_expiration_date_from_osi(symbol: str) -> Optional[date]:
+    """Parse expiration date from OSI option symbol (e.g. AAPL260130C00200000 -> 2026-01-30)."""
+    clean = re.sub(r"-OPTION$", "", str(symbol).strip()).upper()
+    match = re.match(r"^[A-Z]+(\d{6})(?:[CP])\d{8}$", clean)
+    if not match:
+        return None
+    try:
+        yymmdd = match.group(1)
+        yy = int(yymmdd[:2])
+        mm = int(yymmdd[2:4])
+        dd = int(yymmdd[4:6])
+        year = 2000 + yy if yy < 100 else yy
+        return date(year, mm, dd)
+    except (ValueError, TypeError):
+        return None
 
 
 def _normalize_option_symbol(symbol: str) -> str:
@@ -55,16 +75,23 @@ def _normalize_order_status(status) -> str:
 
 class ExecutionManager:
     """Manages order execution with preflight checks and polling."""
-    
-    def __init__(self, client: TradingClient, portfolio_manager: PortfolioManager):
+
+    def __init__(
+        self,
+        client: TradingClient,
+        portfolio_manager: PortfolioManager,
+        storage: Optional[object] = None,
+    ):
         """Initialize the execution manager.
-        
+
         Args:
             client: Trading client instance
             portfolio_manager: Portfolio manager instance
+            storage: Optional StorageManager for governance (kill switch). If None, kill switch is skipped in governance.
         """
         self.client = client
         self.portfolio = portfolio_manager
+        self.storage = storage
         self.order_history: List[Dict] = []
         logger.info("Execution manager initialized")
     
@@ -148,7 +175,13 @@ class ExecutionManager:
             return result
             
         except Exception as e:
-            logger.error(f"Error calculating preflight: {e}")
+            err_msg = str(e).lower()
+            if "same-day" in err_msg and "3:30" in err_msg:
+                logger.error(
+                    "Preflight failed: Public does not allow opening same-day expiring option positions after 3:30 PM ET."
+                )
+            else:
+                logger.error(f"Error calculating preflight: {e}")
             return None
     
     def check_cash_buffer(self, order_value: float) -> bool:
@@ -402,7 +435,20 @@ class ExecutionManager:
         instrument_type = InstrumentType.OPTION if is_option else InstrumentType.EQUITY
         if is_option:
             logger.debug(f"Detected option symbol: {symbol} (type: {instrument_type})")
-        
+            # Public does not allow opening same-day expiring option positions after 3:30 PM ET
+            exp_date = _parse_expiration_date_from_osi(symbol)
+            if exp_date is not None and exp_date == date.today() and is_after_same_day_option_cutoff_et():
+                logger.warning(
+                    "Skipping order: Public does not allow opening same-day expiring option positions after 3:30 PM ET."
+                )
+                return None
+
+        # Governance: hard rules (kill switch, min cash, max position, max correlated)
+        allowed, reason = check_governance(self.portfolio, self.storage, order_details)
+        if not allowed:
+            logger.warning(f"Governance block: {reason}")
+            return None
+
         # Preflight check
         preflight = self.calculate_preflight(
             symbol=symbol,

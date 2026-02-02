@@ -2,6 +2,10 @@
 
 A Python trading bot built on the Public.com Python SDK that manages a small account (~$1,200) using a "high-convexity portfolio" ruleset.
 
+**Vision:** An autonomous hedge-fund manager AI that combines portfolio risk governance, scenario simulation, and execution authority to manage capital under asymmetric, high-convexity strategies while enforcing survival constraints. Not a chatbot—an **operating system for capital**. Optimized for: (1) survival under uncertainty, (2) asymmetric upside capture, (3) capital scalability, (4) human override and transparency. The AI can be aggressive but is never allowed to risk ruin.
+
+**Layers (current mapping):** Human interface → Telegram + AI chat (portfolio, recommendations, overrides). Decision & governance → kill switch, allocation caps, no margin/naked options (config + strategy). Strategy & simulation → convex themes, moonshot trim, roll logic (strategy.py). Data & market intelligence → quotes, options chains, Greeks, news, Polymarket (market_data, telegram tools). Execution & broker control → preflight, limit orders, poll status, dry-run (execution.py). Permission model: read-only by default; managed execution (rebalance, roll, trim) via config; human can pause, override, or restrict via Telegram/env.
+
 ## Strategy Overview
 
 The bot maintains a high-convexity portfolio with:
@@ -142,6 +146,17 @@ Then message your bot on Telegram. You can have full conversation about market n
 - **Build strategy via chat**: *"Set theme A to 40%"*, *"Use 60–90 DTE only"*, *"Set themes to AAPL, MSFT, GOOGL"*, *"I want 25% cash"*
 - **Trades**: *"Buy 10 GME.WS at 25"*, *"Turn on dry run"*
 
+### Task queue (do-work)
+
+The repo uses the **do-work** skill for Claude Code task management: capture requests fast, process later.
+
+- **Capture**: `do work add dark mode to settings` or `do work the search is slow, add export button` — creates request files in `do-work/`.
+- **Process**: `do work run` — triages and works through the queue (simple → implement; medium → explore then build; complex → plan, explore, build).
+- **Verify**: `do work verify` — checks captured REQs against original input.
+- **Cleanup**: `do work cleanup` — consolidates archive (runs automatically at end of work loop).
+
+Structure: `do-work/` (pending REQs), `do-work/user-requests/` (verbatim input per request), `do-work/working/` (in progress), `do-work/archive/` (completed). Skill is installed at `.agents/skills/do-work`.
+
 ### Dry Run Mode
 
 Test without placing real orders:
@@ -250,6 +265,11 @@ All configuration is managed through environment variables in `.env`. Values bel
 - `KILL_SWITCH_DRAWDOWN_PCT`: Stop new positions if drawdown exceeds (default: 0.25)
 - `KILL_SWITCH_LOOKBACK_DAYS`: Lookback for equity high (default: 30)
 - `KILL_SWITCH_COOLDOWN_DAYS`: Cooldown days (default: 5)
+- `MAX_SINGLE_POSITION_PCT`: Max any single position as % of equity (default: 0.30)
+- `MAX_CORRELATED_PCT`: Max combined theme A+B+C allocation (default: 0.60)
+
+### Execution authority
+- `EXECUTION_TIER`: `managed` (allow trades) or `read_only` (pause all trading; AI can still read portfolio and recommend). Default: `managed`. Set to `read_only` for emergency pause.
 
 ### Database & Logging
 - `DB_PATH`: SQLite path (default: "data/trading_bot.db")

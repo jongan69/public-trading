@@ -90,6 +90,8 @@ class HighConvexityConfig(BaseSettings):
     kill_switch_drawdown_pct: float = Field(0.25, env="KILL_SWITCH_DRAWDOWN_PCT")  # 25%
     kill_switch_lookback_days: int = Field(30, env="KILL_SWITCH_LOOKBACK_DAYS")
     kill_switch_cooldown_days: int = Field(5, env="KILL_SWITCH_COOLDOWN_DAYS")
+    max_single_position_pct: float = Field(0.30, env="MAX_SINGLE_POSITION_PCT")  # 30% cap per position
+    max_correlated_pct: float = Field(0.60, env="MAX_CORRELATED_PCT")  # 60% themes A+B+C combined
     
     # Database
     db_path: str = Field("data/trading_bot.db", env="DB_PATH")
@@ -100,6 +102,9 @@ class HighConvexityConfig(BaseSettings):
     
     # Dry Run Mode
     dry_run: bool = Field(False, env="DRY_RUN")
+
+    # Execution authority: read_only = no trades; managed = rebalance/roll/trim/manual (default)
+    execution_tier: str = Field("managed", env="EXECUTION_TIER")
 
     # Telegram + AI (optional; required when running Telegram bot)
     telegram_bot_token: str = Field("", env="TELEGRAM_BOT_TOKEN")

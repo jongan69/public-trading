@@ -15,6 +15,7 @@ from public_api_sdk import (
 
 from src.client import TradingClient
 from src.config import config
+from src.utils.trading_hours import is_after_same_day_option_cutoff_et
 
 
 class MarketDataManager:
@@ -341,6 +342,15 @@ class MarketDataManager:
             if not target_expirations:
                 logger.warning(f"No suitable expirations found for {underlying_symbol}")
                 return None
+            
+            # Public does not allow opening same-day expiring option positions after 3:30 PM ET
+            if is_after_same_day_option_cutoff_et():
+                target_expirations = [e for e in target_expirations if e > today]
+                if not target_expirations:
+                    logger.warning(
+                        "No expirations left after excluding same-day (Public cutoff 3:30 PM ET)."
+                    )
+                    return None
             
             # Try expirations in order
             for expiration in sorted(target_expirations):
