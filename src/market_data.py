@@ -353,18 +353,19 @@ class MarketDataManager:
                     return None
             
             # Try expirations in order
+            target_min = underlying_price * config.strike_range_min
+            target_max = underlying_price * config.strike_range_max
+            chains_tried = 0
             for expiration in sorted(target_expirations):
                 chain = self.get_option_chain(underlying_symbol, expiration, underlying_type)
                 if not chain:
                     continue
+                chains_tried += 1
                 
                 # Filter CALLs only
                 calls = chain.calls if hasattr(chain, 'calls') else []
                 
                 # Find strike closest to target range (spot * 1.00 to 1.10)
-                target_min = underlying_price * config.strike_range_min
-                target_max = underlying_price * config.strike_range_max
-                
                 max_pain_strike = None
                 if config.use_max_pain_for_selection:
                     max_pain_result = self.compute_max_pain(chain)
@@ -432,7 +433,11 @@ class MarketDataManager:
                             "volume": int(best_contract.volume) if getattr(best_contract, "volume", None) else None,
                         }
             
-            logger.warning(f"No suitable option contract found for {underlying_symbol}")
+            reason = (
+                "no option chain data" if chains_tried == 0
+                else f"no call in strike {target_min:.1f}-{target_max:.1f} or failed spread/OI/volume (tried {chains_tried} expirations)"
+            )
+            logger.warning(f"No suitable option contract found for {underlying_symbol}: {reason}")
             return None
             
         except Exception as e:

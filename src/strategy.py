@@ -347,10 +347,7 @@ class HighConvexityStrategy:
                         })
                         break
         
-        # Check moonshot trim
-        trim_order = self.check_moonshot_trim()
-        if trim_order:
-            orders.append(trim_order)
+        # Moonshot trim is added in run_daily_logic at the start so it executes before any BUY (governance).
         
         return orders
     
@@ -466,11 +463,16 @@ class HighConvexityStrategy:
         
         all_orders = []
         
-        # Process existing positions
+        # Moonshot trim first so it executes before any BUY (avoids governance block: "Trim before adding")
+        trim_order = self.check_moonshot_trim()
+        if trim_order:
+            all_orders.append(trim_order)
+        
+        # Process existing positions (exits, rolls)
         position_orders = self.process_positions()
         all_orders.extend(position_orders)
         
-        # Rebalance if needed
+        # Rebalance if needed (theme BUYs/SELLs)
         rebalance_orders = self.rebalance()
         all_orders.extend(rebalance_orders)
         
