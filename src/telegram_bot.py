@@ -1,8 +1,12 @@
 """Telegram trading bot with AI: natural-language commands for portfolio, trades, and strategy."""
 import asyncio
 import base64
+import http.server
 import json
+import os
 import re
+import socketserver
+import threading
 import urllib.error
 import urllib.request
 from datetime import date, datetime, timezone
@@ -2228,6 +2232,30 @@ def main() -> None:
             f"Daily briefing scheduled for {config.briefing_time_hour:02d}:{config.briefing_time_minute:02d} "
             f"{config.briefing_timezone}"
         )
+
+    # When PORT is set (e.g. Render), run a minimal HTTP server so health checks succeed
+    port_str = os.environ.get("PORT")
+    if port_str:
+        try:
+            port = int(port_str)
+
+            class HealthHandler(http.server.BaseHTTPRequestHandler):
+                def do_GET(self):
+                    self.send_response(200)
+                    self.send_header("Content-type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"OK")
+
+                def log_message(self, format, *args):
+                    pass  # Suppress HTTP log noise
+
+            httpd = socketserver.TCPServer(("", port), HealthHandler)
+            httpd.allow_reuse_address = True
+            thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+            thread.start()
+            logger.info(f"Health server listening on port {port} (for Render/health checks)")
+        except Exception as e:
+            logger.warning(f"Could not start health server on PORT: {e}")
 
     logger.info("Telegram bot running. Send /start for help.")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
