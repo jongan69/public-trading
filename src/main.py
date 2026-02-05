@@ -4,7 +4,7 @@ import signal
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Dict, Optional
 from zoneinfo import ZoneInfo
 
 from loguru import logger
@@ -89,7 +89,9 @@ class TradingBot:
         # Get high from last N days
         high_equity = self.storage.get_equity_high_last_n_days(config.kill_switch_lookback_days)
 
-        if high_equity is None:
+        # If no history yet (first month), use current equity as baseline
+        if high_equity is None or high_equity <= 0:
+            logger.debug(f"No equity history yet, using current equity ${equity:.2f} as baseline")
             return False
 
         drawdown_pct = (equity - high_equity) / high_equity
@@ -155,26 +157,38 @@ class TradingBot:
 
         return False
     
-    def run_daily_logic(self):
-        """Run daily trading logic."""
+    def run_daily_logic(
+        self,
+        poll_timeout_seconds: Optional[float] = None,
+        quiet: bool = False,
+    ) -> Dict[str, Any]:
+        """Run daily trading logic.
+
+        Args:
+            poll_timeout_seconds: Timeout when waiting for order fill (None = config default).
+            quiet: If True, skip banner and portfolio breakdown (e.g. when called from trading loop).
+
+        Returns:
+            Dict with orders_planned, orders_skipped, orders_sent (for loop summary).
+        """
+        run_result: Dict[str, Any] = {"orders_planned": 0, "orders_skipped": 0, "orders_sent": 0}
         try:
-            logger.info("=" * 70)
-            logger.info("Running daily trading logic")
-            logger.info("=" * 70)
-            
+            if not quiet:
+                logger.info("=" * 70)
+                logger.info("Running daily trading logic")
+                logger.info("=" * 70)
+
             # Check kill switch
             if self.check_kill_switch():
                 logger.warning("Kill switch active - skipping new positions")
-                # Still process exits/rolls but don't open new positions
-                # This would require modifying strategy logic
-                return
+                return run_result
             
             # Refresh portfolio
             self.portfolio_manager.refresh_portfolio()
-            
-            # Display portfolio breakdown
-            self.portfolio_manager.display_portfolio_breakdown()
-            
+
+            if not quiet:
+                self.portfolio_manager.display_portfolio_breakdown()
+
             # Save snapshots
             equity = self.portfolio_manager.get_equity()
             self.storage.save_config_snapshot(equity)
@@ -203,10 +217,11 @@ class TradingBot:
 
             # Run strategy logic
             orders = self.strategy.run_daily_logic()
+            run_result["orders_planned"] = len(orders)
 
             if not orders:
                 logger.info("No orders to execute")
-                return
+                return run_result
 
             # REQ-012: Check cooldown before executing orders
             if config.cooldown_enabled and self.storage.is_in_cooldown():
@@ -216,19 +231,66 @@ class TradingBot:
                     f"Cool-down active. Trading blocked for {time_left:.0f} more minutes. "
                     f"Skipping {len(orders)} orders."
                 )
-                return
+                return run_result
+
+            # Skip proposing orders for symbols that already have a pending order
+            filtered_orders = []
+            skipped_symbols = []
+            for order_details in orders:
+                if self.execution_manager.has_pending_order_for_order(order_details):
+                    sym = order_details.get("symbol")
+                    if sym:
+                        skipped_symbols.append(sym)
+                    continue
+                filtered_orders.append(order_details)
+            run_result["orders_skipped"] = len(skipped_symbols)
+            orders = filtered_orders
+            if skipped_symbols:
+                logger.info(
+                    f"Skipping {len(skipped_symbols)} order(s) this cycle (already pending: {', '.join(skipped_symbols)})"
+                )
+            if not orders:
+                logger.info("No orders to execute (all skipped: pending orders or none proposed)")
+                return run_result
 
             logger.info(f"Executing {len(orders)} orders")
+            orders_sent = 0
 
-            # Execute orders
+            # Execute orders (poll_timeout_seconds: None = full config timeout; short value when run from trading loop)
             for order_details in orders:
                 if self.strategy.trades_today >= config.max_trades_per_day:
                     logger.warning(f"Max trades per day reached: {config.max_trades_per_day}")
                     break
-                
-                result = self.execution_manager.execute_order(order_details)
-                
+
+                # Check confirm trade threshold
+                quantity = order_details.get("quantity", 0)
+                price = order_details.get("price", 0)
+                order_value = abs(quantity * price)
+                symbol = order_details.get("symbol", "")
+                action = order_details.get("action", "")
+
+                # Log large trades for visibility
+                if order_value > config.confirm_trade_threshold_usd:
+                    logger.warning(
+                        f"Large trade: {action} {quantity} {symbol} @ ${price:.2f} "
+                        f"(value: ${order_value:,.2f}, threshold: ${config.confirm_trade_threshold_usd:,.2f})"
+                    )
+                elif abs(quantity) > config.confirm_trade_threshold_contracts:
+                    logger.warning(
+                        f"Large trade: {action} {quantity} {symbol} "
+                        f"(contracts: {abs(quantity)}, threshold: {config.confirm_trade_threshold_contracts})"
+                    )
+
+                result = self.execution_manager.execute_order(
+                    order_details,
+                    poll_timeout_seconds=poll_timeout_seconds,
+                )
+                if isinstance(result, dict) and result.get("ok") is False:
+                    logger.warning(f"Order blocked: {result.get('error', 'unknown')}")
+                    continue
                 if result:
+                    orders_sent += 1
+                    run_result["orders_sent"] = orders_sent
                     # Save order to database
                     self.storage.save_order({
                         **order_details,
@@ -287,18 +349,25 @@ class TradingBot:
                         self.strategy.trades_today += 1
                         logger.info(f"Order filled: {result.get('symbol')} x{result.get('quantity')}")
                     else:
-                        logger.info(
-                            f"Order submitted (status={order_status}); "
-                            "still open and may fill later."
-                        )
+                        if order_status in ("CANCELLED", "REJECTED", "EXPIRED"):
+                            logger.info(
+                                f"Order did not fill (status={order_status})."
+                            )
+                        else:
+                            logger.info(
+                                f"Order submitted (status={order_status}); "
+                                "still open and may fill later."
+                            )
                     logger.info(f"Order result: {result}")
                 else:
                     logger.error(f"Order execution failed: {order_details}")
             
             logger.info("Daily logic completed")
-            
+            return run_result
+
         except Exception as e:
             logger.error(f"Error in daily logic: {e}", exc_info=True)
+            return run_result
     
     def _should_run_rebalance_now(self) -> bool:
         """Return True if current time in configured timezone is at or past rebalance time and we haven't run today."""

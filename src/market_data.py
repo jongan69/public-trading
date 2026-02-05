@@ -1,8 +1,14 @@
 """Market data retrieval and management."""
 import re
-from typing import List, Dict, Optional, Tuple
+import time
+from typing import Callable, Dict, List, Optional, Tuple, TypeVar
 from datetime import datetime, date
 from loguru import logger
+
+T = TypeVar("T")
+_QUOTE_CACHE_TTL_SEC = 30  # Use cached quote for 30s to balance rate-limiting with data freshness
+_MAX_429_RETRIES = 3
+_429_BACKOFF_SEC = (1, 2, 4)
 
 from public_api_sdk import (
     OrderInstrument,
@@ -16,6 +22,13 @@ from public_api_sdk import (
 from src.client import TradingClient
 from src.config import config
 from src.utils.trading_hours import is_after_same_day_option_cutoff_et
+from src.utils.sdk_serializer import (
+    extract_quote_data,
+    extract_option_chain_data,
+    extract_option_contract_data,
+    extract_greeks_data,
+    serialize_sdk_object,
+)
 
 
 class MarketDataManager:
@@ -29,27 +42,92 @@ class MarketDataManager:
         """
         self.client = client
         self._quote_cache: Dict[str, float] = {}
+        self._quote_cache_ts: Dict[str, float] = {}
+        self._instrument_name_cache: Dict[Tuple[str, str], Optional[str]] = {}
         logger.info("Market data manager initialized")
-    
+
+    def _retry_on_429(self, fn: Callable[[], T]) -> T:
+        """Run fn(); on 429 (rate limit), sleep and retry with backoff. Re-raise other errors."""
+        last_err = None
+        for attempt in range(_MAX_429_RETRIES):
+            try:
+                return fn()
+            except Exception as e:
+                last_err = e
+                err_str = str(e).lower()
+                if "429" not in err_str and "rate" not in err_str:
+                    raise
+                if attempt < _MAX_429_RETRIES - 1:
+                    backoff = _429_BACKOFF_SEC[attempt] if attempt < len(_429_BACKOFF_SEC) else _429_BACKOFF_SEC[-1]
+                    logger.warning(f"API 429 rate limit; retrying in {backoff}s (attempt {attempt + 1}/{_MAX_429_RETRIES})")
+                    time.sleep(backoff)
+        raise last_err
+
+    def get_instrument_display_name(
+        self, symbol: str, instrument_type: InstrumentType = InstrumentType.EQUITY
+    ) -> Optional[str]:
+        """Get display/company name for an instrument from the Public API.
+
+        Uses get_instrument(symbol, instrument_type) and returns the best name field
+        (name, title, display_name, short_name, long_name). Results are cached per
+        (symbol, instrument_type) for longevity and to avoid repeated API calls.
+
+        For options, call with underlying symbol and InstrumentType.EQUITY to get
+        the underlying company name.
+
+        Returns:
+            Display name string, or None if not available or on error.
+        """
+        if not symbol or not symbol.strip():
+            return None
+        key = (symbol.strip().upper(), getattr(instrument_type, "value", str(instrument_type)))
+        if key in self._instrument_name_cache:
+            return self._instrument_name_cache[key]
+        try:
+
+            def _fetch():
+                return self.client.client.get_instrument(symbol.strip(), instrument_type)
+
+            inst = self._retry_on_429(_fetch)
+            data = serialize_sdk_object(inst) if inst else {}
+            if not isinstance(data, dict):
+                self._instrument_name_cache[key] = None
+                return None
+            name = (
+                data.get("name")
+                or data.get("title")
+                or data.get("display_name")
+                or data.get("short_name")
+                or data.get("long_name")
+            )
+            if name and isinstance(name, str) and name.strip():
+                self._instrument_name_cache[key] = name.strip()
+                return name.strip()
+            self._instrument_name_cache[key] = None
+            return None
+        except Exception as e:
+            logger.debug(f"Could not get instrument name for {symbol}: {e}")
+            self._instrument_name_cache[key] = None
+            return None
+
     def get_quotes(self, symbols: List[str], instrument_type: InstrumentType = InstrumentType.EQUITY) -> Dict[str, float]:
         """Get current quotes for multiple symbols.
-        
-        Args:
-            symbols: List of symbols to get quotes for
-            instrument_type: Type of instrument (default: EQUITY)
-            
-        Returns:
-            Dictionary mapping symbol to last price
+
+        Retries on 429 (rate limit) with backoff. Updates quote cache and cache timestamps on success.
         """
         try:
             instruments = [
                 OrderInstrument(symbol=symbol, type=instrument_type)
                 for symbol in symbols
             ]
-            
-            quotes = self.client.client.get_quotes(instruments)
-            
+
+            def _fetch():
+                return self.client.client.get_quotes(instruments)
+
+            quotes = self._retry_on_429(_fetch)
+
             result = {}
+            now = time.time()
             for quote in quotes:
                 symbol = quote.instrument.symbol
                 # last can be None for illiquid options, crypto, or no recent trade
@@ -73,28 +151,29 @@ class MarketDataManager:
                 if price is not None:
                     result[symbol] = price
                     self._quote_cache[symbol] = price
+                    self._quote_cache_ts[symbol] = now
                 else:
                     result[symbol] = None
                     logger.debug(f"No price for {symbol} (last/bid/ask missing)")
-            
+
             logger.debug(f"Retrieved quotes for {len([v for v in result.values() if v is not None])} symbols")
             return result
-            
+
         except Exception as e:
             logger.error(f"Error retrieving quotes: {e}")
             raise
     
     def get_quote(self, symbol: str, instrument_type: InstrumentType = InstrumentType.EQUITY) -> Optional[float]:
         """Get current quote for a single symbol.
-        
-        Args:
-            symbol: Symbol to get quote for
-            instrument_type: Type of instrument (default: EQUITY)
-            
-        Returns:
-            Last price or None if error
+
+        Uses cached price if available and younger than _QUOTE_CACHE_TTL_SEC to reduce 429s.
+        Retries on 429 with backoff when calling the API.
         """
         try:
+            now = time.time()
+            cached_ts = self._quote_cache_ts.get(symbol, 0)
+            if symbol in self._quote_cache and (now - cached_ts) < _QUOTE_CACHE_TTL_SEC:
+                return self._quote_cache[symbol]
             quotes = self.get_quotes([symbol], instrument_type)
             return quotes.get(symbol)
         except Exception as e:
@@ -116,7 +195,11 @@ class MarketDataManager:
         try:
             api_symbol = re.sub(r"-OPTION$", "", str(symbol)).strip() if instrument_type == InstrumentType.OPTION else symbol
             instruments = [OrderInstrument(symbol=api_symbol, type=instrument_type)]
-            quotes = self.client.client.get_quotes(instruments)
+
+            def _fetch_bid_ask():
+                return self.client.client.get_quotes(instruments)
+
+            quotes = self._retry_on_429(_fetch_bid_ask)
             if not quotes:
                 return None
             quote = quotes[0]
@@ -267,22 +350,25 @@ class MarketDataManager:
             osi_symbols: List of OSI format option symbols
             
         Returns:
-            Dictionary mapping OSI symbol to Greeks dict
+            Dictionary mapping OSI symbol to comprehensive Greeks dict with ALL fields
         """
         try:
             if len(osi_symbols) == 1:
                 greek_response = self.client.client.get_option_greek(osi_symbols[0])
-                return {osi_symbols[0]: {
-                    "delta": float(greek_response.greeks.delta),
-                    "gamma": float(greek_response.greeks.gamma),
-                    "theta": float(greek_response.greeks.theta),
-                    "vega": float(greek_response.greeks.vega),
-                }}
+                # Use comprehensive serializer to extract ALL fields
+                greeks_dict = extract_greeks_data(greek_response.greeks)
+                # Extract symbol from response if available
+                symbol = getattr(greek_response, "osi_symbol", None) or getattr(
+                    greek_response, "symbol", None
+                ) or osi_symbols[0]
+                return {symbol: greeks_dict}
             else:
                 greeks_response = self.client.client.get_option_greeks(osi_symbols)
                 result = {}
                 for i, greek_data in enumerate(greeks_response.greeks):
-                    # Use symbol from response if present, else same order as osi_symbols
+                    # Use comprehensive serializer
+                    greeks_dict = extract_greeks_data(greek_data.greeks)
+                    # Extract symbol
                     symbol = getattr(greek_data, "osi_symbol", None) or getattr(
                         greek_data, "symbol", None
                     )
@@ -290,17 +376,87 @@ class MarketDataManager:
                         symbol = osi_symbols[i]
                     if symbol is None:
                         continue
-                    result[symbol] = {
-                        "delta": float(greek_data.greeks.delta),
-                        "gamma": float(greek_data.greeks.gamma),
-                        "theta": float(greek_data.greeks.theta),
-                        "vega": float(greek_data.greeks.vega),
-                    }
+                    result[symbol] = greeks_dict
                 return result
                 
         except Exception as e:
             logger.error(f"Error retrieving Greeks: {e}")
             return {}
+    
+    def get_quotes_comprehensive(self, symbols: List[str], instrument_type: InstrumentType = InstrumentType.EQUITY) -> Dict[str, Dict]:
+        """Get comprehensive quote data for multiple symbols (ALL fields for AI consumption).
+        
+        Args:
+            symbols: List of symbols to get quotes for
+            instrument_type: Type of instrument (default: EQUITY)
+            
+        Returns:
+            Dictionary mapping symbol to comprehensive quote dict with ALL available fields
+        """
+        try:
+            instruments = [
+                OrderInstrument(symbol=symbol, type=instrument_type)
+                for symbol in symbols
+            ]
+
+            def _fetch():
+                return self.client.client.get_quotes(instruments)
+
+            quotes = self._retry_on_429(_fetch)
+
+            result = {}
+            now = time.time()
+            for quote in quotes:
+                quote_data = extract_quote_data(quote)
+                symbol = quote_data.get("symbol")
+                if symbol:
+                    result[symbol] = quote_data
+                    if quote_data.get("last"):
+                        self._quote_cache[symbol] = quote_data["last"]
+                        self._quote_cache_ts[symbol] = now
+
+            logger.debug(f"Retrieved comprehensive quotes for {len(result)} symbols")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error retrieving comprehensive quotes: {e}")
+            return {}
+    
+    def get_option_chain_comprehensive(
+        self,
+        underlying_symbol: str,
+        expiration_date: date,
+        underlying_type: InstrumentType = InstrumentType.EQUITY
+    ) -> Optional[Dict]:
+        """Get comprehensive option chain data (ALL fields for AI consumption).
+        
+        Args:
+            underlying_symbol: Underlying symbol
+            expiration_date: Expiration date
+            underlying_type: Type of underlying instrument
+            
+        Returns:
+            Comprehensive dictionary with all chain data or None if error
+        """
+        try:
+            chain = self.get_option_chain(underlying_symbol, expiration_date, underlying_type)
+            if not chain:
+                return None
+            
+            # Use comprehensive serializer to extract ALL fields
+            chain_data = extract_option_chain_data(chain)
+            
+            # Add max pain calculation
+            max_pain_result = self.compute_max_pain(chain)
+            if max_pain_result is not None:
+                chain_data["max_pain_strike"] = max_pain_result[0]
+                chain_data["max_pain_value"] = max_pain_result[1]
+            
+            return chain_data
+            
+        except Exception as e:
+            logger.error(f"Error retrieving comprehensive option chain: {e}")
+            return None
     
     def select_option_contract(
         self,

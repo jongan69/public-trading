@@ -9,6 +9,12 @@ import json
 from src.config import config
 
 
+def _get_snapshot_config_dict() -> Dict[str, Any]:
+    """Build dict of all non-sensitive config for snapshots (learning/analytics)."""
+    from src.utils.config_override_manager import TELEGRAM_EDITABLE_KEYS
+    return {k: getattr(config, k, None) for k in TELEGRAM_EDITABLE_KEYS if hasattr(config, k)}
+
+
 class StorageManager:
     """Manages SQLite database for positions, orders, and configuration."""
     
@@ -101,7 +107,7 @@ class StorageManager:
             )
         """)
         
-        # Portfolio snapshots
+        # Portfolio snapshots (config_json added for learning: correlate config with outcomes)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS portfolio_snapshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -110,9 +116,16 @@ class StorageManager:
                 buying_power REAL NOT NULL,
                 cash REAL NOT NULL,
                 allocations_json TEXT,
+                config_json TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # Ensure config_json exists on existing DBs (no-op if already present)
+        try:
+            cursor.execute("ALTER TABLE portfolio_snapshots ADD COLUMN config_json TEXT")
+        except sqlite3.OperationalError as e:
+            # Column likely already exists, which is fine
+            logger.debug(f"Migration: {e}")
         
         # Equity history (for kill switch)
         cursor.execute("""
@@ -354,26 +367,15 @@ class StorageManager:
         conn.close()
     
     def save_config_snapshot(self, equity: float):
-        """Save configuration snapshot.
-        
+        """Save full non-sensitive config snapshot for learning (correlate config with outcomes).
+
         Args:
             equity: Current equity value
         """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        
-        config_dict = {
-            "theme_underlyings": config.theme_underlyings,
-            "moonshot_symbol": config.moonshot_symbol,
-            "theme_a_target": config.theme_a_target,
-            "theme_b_target": config.theme_b_target,
-            "theme_c_target": config.theme_c_target,
-            "moonshot_target": config.moonshot_target,
-            "cash_minimum": config.cash_minimum,
-        }
-        
+        config_dict = _get_snapshot_config_dict()
         config_json = json.dumps(config_dict)
-        
         cursor.execute("""
             INSERT INTO config_snapshots (snapshot_date, config_json, equity, created_at)
             VALUES (?, ?, ?, ?)
@@ -383,34 +385,33 @@ class StorageManager:
             equity,
             datetime.now().isoformat(),
         ))
-        
         conn.commit()
         conn.close()
     
     def save_portfolio_snapshot(self, portfolio_data: Dict):
-        """Save portfolio snapshot.
-        
+        """Save portfolio snapshot with current config for learning (correlate config with outcomes).
+
         Args:
-            portfolio_data: Portfolio data dictionary
+            portfolio_data: Dict with equity, buying_power, cash, allocations (optional)
         """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        
         allocations_json = json.dumps(portfolio_data.get("allocations", {}))
-        
+        config_dict = portfolio_data.get("config") or _get_snapshot_config_dict()
+        config_json = json.dumps(config_dict)
         cursor.execute("""
             INSERT INTO portfolio_snapshots 
-            (snapshot_date, equity, buying_power, cash, allocations_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (snapshot_date, equity, buying_power, cash, allocations_json, config_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (
             date.today().isoformat(),
             portfolio_data["equity"],
             portfolio_data["buying_power"],
             portfolio_data["cash"],
             allocations_json,
+            config_json,
             datetime.now().isoformat(),
         ))
-        
         conn.commit()
         conn.close()
     
@@ -458,6 +459,53 @@ class StorageManager:
         conn.close()
         
         return result[0] if result and result[0] else None
+
+    def get_balance_trends(self, days: int = 30, max_points: int = 500) -> List[Dict]:
+        """Get portfolio balance snapshots over time for trend observation (includes config for learning).
+
+        Args:
+            days: Number of days to look back.
+            max_points: Maximum number of snapshots to return (most recent first).
+
+        Returns:
+            List of dicts with created_at, equity, buying_power, cash, allocations, config (when present).
+            Ordered by created_at descending (newest first). config correlates snapshot with strategy for learning.
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cutoff = (date.today() - timedelta(days=days)).isoformat()
+        # Support DBs with or without config_json column
+        cursor.execute("PRAGMA table_info(portfolio_snapshots)")
+        has_config = any(col[1] == "config_json" for col in cursor.fetchall())
+        if has_config:
+            cursor.execute("""
+                SELECT created_at, snapshot_date, equity, buying_power, cash, allocations_json, config_json
+                FROM portfolio_snapshots WHERE snapshot_date >= ? ORDER BY created_at DESC LIMIT ?
+            """, (cutoff, max_points))
+            columns = ["created_at", "snapshot_date", "equity", "buying_power", "cash", "allocations_json", "config_json"]
+        else:
+            cursor.execute("""
+                SELECT created_at, snapshot_date, equity, buying_power, cash, allocations_json
+                FROM portfolio_snapshots WHERE snapshot_date >= ? ORDER BY created_at DESC LIMIT ?
+            """, (cutoff, max_points))
+            columns = ["created_at", "snapshot_date", "equity", "buying_power", "cash", "allocations_json"]
+        rows = cursor.fetchall()
+        conn.close()
+        result = []
+        for row in rows:
+            d = dict(zip(columns, row))
+            if d.get("allocations_json"):
+                try:
+                    d["allocations"] = json.loads(d["allocations_json"])
+                except (TypeError, json.JSONDecodeError):
+                    d["allocations"] = {}
+            if d.get("config_json"):
+                try:
+                    d["config"] = json.loads(d["config_json"])
+                except (TypeError, json.JSONDecodeError):
+                    d["config"] = {}
+            result.append(d)
+        return result
     
     def get_recent_orders(self, limit: int = 100) -> List[Dict]:
         """Get recent orders.
@@ -619,7 +667,7 @@ class StorageManager:
 
     def clear_pending_alerts(self):
         """Clear pending alerts from bot_state."""
-        self.set_bot_state("pending_alerts", None)
+        self.delete_bot_state("pending_alerts")
 
     def mark_alert_triggered(self, alert_key: str):
         """Mark an alert as triggered with current timestamp.

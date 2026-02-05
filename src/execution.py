@@ -39,7 +39,8 @@ def _parse_expiration_date_from_osi(symbol: str) -> Optional[date]:
         yy = int(yymmdd[:2])
         mm = int(yymmdd[2:4])
         dd = int(yymmdd[4:6])
-        year = 2000 + yy if yy < 100 else yy
+        # For OSI format, YY is always in current century (2000-2099)
+        year = 2000 + yy
         return date(year, mm, dd)
     except (ValueError, TypeError):
         return None
@@ -397,7 +398,7 @@ class ExecutionManager:
                 status = getattr(order, "status", None)
                 status_str = status.value if hasattr(status, "value") else str(status)
                 if order_symbol_norm == our_symbol and status_str in pending_statuses:
-                    logger.info(
+                    logger.debug(
                         f"Found pending order for {symbol} (status={status_str}); skipping duplicate"
                     )
                     return True
@@ -405,31 +406,55 @@ class ExecutionManager:
         except Exception as e:
             logger.warning(f"Could not check pending orders for {symbol}: {e}")
             return False
+
+    def has_pending_order_for_order(self, order_details: Dict) -> bool:
+        """Return True if there is already a pending order for this order's symbol (skip proposing for this cycle)."""
+        symbol = (order_details or {}).get("symbol")
+        if not symbol:
+            return False
+        is_option = (
+            symbol.endswith("-OPTION") or
+            (len(symbol) > 10 and re.match(r"^[A-Z]+\d{6}[CP]\d{8}", symbol.replace("-OPTION", "")))
+        )
+        instrument_type = InstrumentType.OPTION if is_option else InstrumentType.EQUITY
+        return self._has_pending_order_for_symbol(symbol, instrument_type)
     
-    def execute_order(self, order_details: Dict) -> Optional[Dict]:
+    def execute_order(
+        self,
+        order_details: Dict,
+        poll_timeout_seconds: Optional[int] = None,
+    ) -> Optional[Dict]:
         """Execute an order with preflight check and polling.
-        
+
         Args:
             order_details: Dictionary with order details (action, symbol, quantity, price, etc.)
-            
+            poll_timeout_seconds: Max seconds to wait for fill. None = use config (e.g. 300).
+                0 = do not poll (return immediately after place with one status check).
+                Use a short value (e.g. 30) when called from the trading loop to avoid blocking.
+
         Returns:
-            Execution result dictionary or None if failed
+            Success: dict with order_id, symbol, action, quantity, price, status, etc.
+            Failure: dict with ok=False and error=<reason> so caller can surface to user/AI.
         """
         action = order_details.get("action")
         symbol = order_details.get("symbol")
         quantity = order_details.get("quantity")
         price = order_details.get("price")
-        
+
         if not all([action, symbol, quantity, price]):
-            logger.error(f"Invalid order details: {order_details}")
-            return None
-        
+            err = "Invalid order details: missing action, symbol, quantity, or price"
+            logger.error(f"{err}: {order_details}")
+            return {"ok": False, "error": err}
+
+        logger.info(
+            f"Executing order: {action} {quantity} {symbol} @ {price}"
+        )
         side = OrderSide.BUY if action == "BUY" else OrderSide.SELL
         limit_price = Decimal(str(price))
-        
+
         # Determine instrument type: check for -OPTION suffix or OSI format (long alphanumeric)
         is_option = (
-            symbol.endswith("-OPTION") or 
+            symbol.endswith("-OPTION") or
             (len(symbol) > 10 and re.match(r"^[A-Z]+\d{6}[CP]\d{8}", symbol.replace("-OPTION", "")))
         )
         instrument_type = InstrumentType.OPTION if is_option else InstrumentType.EQUITY
@@ -438,16 +463,15 @@ class ExecutionManager:
             # Public does not allow opening same-day expiring option positions after 3:30 PM ET
             exp_date = _parse_expiration_date_from_osi(symbol)
             if exp_date is not None and exp_date == date.today() and is_after_same_day_option_cutoff_et():
-                logger.warning(
-                    "Skipping order: Public does not allow opening same-day expiring option positions after 3:30 PM ET."
-                )
-                return None
+                err = "Public does not allow opening same-day expiring option positions after 3:30 PM ET."
+                logger.warning(f"Order blocked: {err}")
+                return {"ok": False, "error": err}
 
         # Governance: hard rules (kill switch, min cash, max position, max correlated)
         allowed, reason = check_governance(self.portfolio, self.storage, order_details)
         if not allowed:
             logger.warning(f"Governance block: {reason}")
-            return None
+            return {"ok": False, "error": reason}
 
         # Preflight check
         preflight = self.calculate_preflight(
@@ -457,25 +481,28 @@ class ExecutionManager:
             limit_price=limit_price,
             instrument_type=instrument_type
         )
-        
+
         if not preflight:
-            logger.error(f"Preflight check failed for {symbol}")
-            return None
-        
+            err = f"Preflight check failed for {symbol} (symbol or quote may be invalid)."
+            logger.error(f"Order blocked: {err}")
+            return {"ok": False, "error": err}
+
         # Check cash buffer for buy orders
         if side == OrderSide.BUY:
             if not self.check_cash_buffer(preflight["order_value"]):
-                logger.warning(f"Order would violate cash buffer: {symbol}")
-                return None
-        
+                err = f"Order would violate cash buffer: need ${preflight.get('order_value', 0):,.2f}; trim or add cash first."
+                logger.warning(f"Order blocked: {err}")
+                return {"ok": False, "error": err}
+
         # Skip if there's already a pending order for this symbol (avoids "quantity exceeds remaining" error)
         if self._has_pending_order_for_symbol(symbol, instrument_type):
-            logger.warning(
-                f"Skipping order for {symbol}: already have a pending order on this symbol. "
+            err = (
+                f"Already have a pending order for {symbol}. "
                 "Wait for it to fill or cancel before placing another."
             )
-            return None
-        
+            logger.warning(f"Order blocked: {err}")
+            return {"ok": False, "error": err}
+
         # Place order
         order_id = self.place_order(
             symbol=symbol,
@@ -484,13 +511,25 @@ class ExecutionManager:
             limit_price=limit_price,
             instrument_type=instrument_type
         )
-        
+
         if not order_id:
-            return None
+            err = "Order placement failed (no order ID returned); check symbol and liquidity."
+            logger.error(f"Order failed: {err}")
+            return {"ok": False, "error": err}
         
-        # Poll for fill; timeout from config (order remains open in market if not filled)
-        poll_timeout = config.order_poll_timeout_seconds
-        result = self.poll_order_status(order_id, timeout_seconds=poll_timeout)
+        # Poll for fill; use provided timeout or config (order remains open in market if not filled)
+        poll_timeout = (
+            config.order_poll_timeout_seconds
+            if poll_timeout_seconds is None
+            else poll_timeout_seconds
+        )
+        if poll_timeout == 0:
+            # No wait: one quick status check then return (avoids blocking loop)
+            result = self.poll_order_status(order_id, timeout_seconds=3)
+            if not result:
+                result = {"order_id": order_id, "status": "OPEN"}
+        else:
+            result = self.poll_order_status(order_id, timeout_seconds=poll_timeout)
         
         if result:
             status = result["status"]  # already normalized string
@@ -500,7 +539,8 @@ class ExecutionManager:
                 f"Order {order_id} still open after {poll_timeout}s - continuing. "
                 "Order remains in market and may fill later."
             )
-        
+
+        logger.info(f"Order placed: {order_id} {action} {quantity} {symbol} @ {price} -> {status}")
         return {
             "order_id": order_id,
             "symbol": symbol,

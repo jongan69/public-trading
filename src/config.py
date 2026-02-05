@@ -1,7 +1,14 @@
 """Configuration for high-convexity portfolio trading bot."""
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, computed_field
+from pydantic import Field, computed_field, model_validator
 from typing import List, Optional
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+SETTINGS_FILE = _PROJECT_ROOT / "data" / "settings.json"
+
+# Keys that must stay in .env only (never in settings file or chat)
+SENSITIVE_CONFIG_KEYS = {"api_secret_key", "telegram_bot_token", "openai_api_key", "allowed_telegram_user_ids"}
 
 
 class HighConvexityConfig(BaseSettings):
@@ -23,7 +30,7 @@ class HighConvexityConfig(BaseSettings):
     # Strategy Universe (env: comma-separated "UMC,TE,AMPX")
     theme_underlyings_csv: str = Field(
         default="UMC,TE,AMPX",
-        env="THEME_UNDERLYINGS",
+        validation_alias="THEME_UNDERLYINGS",
     )
 
     @computed_field
@@ -73,6 +80,7 @@ class HighConvexityConfig(BaseSettings):
     max_trades_per_day: int = Field(5, env="MAX_TRADES_PER_DAY")
     order_price_offset_pct: float = Field(0.0, env="ORDER_PRICE_OFFSET_PCT")  # Mid price offset
     order_poll_timeout_seconds: int = Field(300, env="ORDER_POLL_TIMEOUT_SECONDS")  # 5 minutes
+    order_poll_timeout_loop_seconds: int = Field(30, env="ORDER_POLL_TIMEOUT_LOOP_SECONDS")  # short when run from trading loop
     order_poll_interval_seconds: int = Field(5, env="ORDER_POLL_INTERVAL_SECONDS")
     
     # Signals
@@ -132,12 +140,20 @@ class HighConvexityConfig(BaseSettings):
     briefing_timezone: str = Field("America/New_York", env="BRIEFING_TIMEZONE")
     briefing_include_market_news: bool = Field(True, env="BRIEFING_INCLUDE_MARKET_NEWS")
 
+    # Trading loop (state machine: research → strategy → execute → observe → adjust)
+    trading_loop_enabled: bool = Field(False, env="TRADING_LOOP_ENABLED")
+    trading_loop_interval_minutes: int = Field(240, env="TRADING_LOOP_INTERVAL_MINUTES")  # 4h default
+    trading_loop_execute_trades: bool = Field(False, env="TRADING_LOOP_EXECUTE_TRADES")  # False = preview only
+    trading_loop_telegram_notify: bool = Field(True, env="TRADING_LOOP_TELEGRAM_NOTIFY")
+    trading_loop_apply_adjustments: bool = Field(False, env="TRADING_LOOP_APPLY_ADJUSTMENTS")  # If True, apply safe config changes (e.g. reduce moonshot on drawdown)
+    trading_loop_include_fundamental: bool = Field(False, env="TRADING_LOOP_INCLUDE_FUNDAMENTAL")  # If True, add one-symbol fundamental snippet to research
+
     # Telegram + AI (optional; required when running Telegram bot)
     telegram_bot_token: str = Field("", env="TELEGRAM_BOT_TOKEN")
     openai_api_key: str = Field("", env="OPENAI_API_KEY")
     allowed_telegram_user_ids: str = Field(
         "",
-        env="ALLOWED_TELEGRAM_USER_IDS",
+        validation_alias="ALLOWED_TELEGRAM_USER_IDS",
         description="Comma-separated Telegram user IDs allowed to trade / change config (empty = allow all for read-only)",
     )
 
@@ -149,19 +165,89 @@ class HighConvexityConfig(BaseSettings):
             return []
         return [int(x.strip()) for x in s.split(",") if x.strip()]
 
+    @model_validator(mode='after')
+    def validate_ranges(self) -> 'HighConvexityConfig':
+        """Validate that config ranges are sensible."""
+        errors = []
+
+        # Strike range validation
+        if self.strike_range_min >= self.strike_range_max:
+            errors.append(f"strike_range_min ({self.strike_range_min}) must be < strike_range_max ({self.strike_range_max})")
+
+        # Option DTE validation
+        if self.option_dte_min >= self.option_dte_max:
+            errors.append(f"option_dte_min ({self.option_dte_min}) must be < option_dte_max ({self.option_dte_max})")
+        if self.option_dte_fallback_min >= self.option_dte_fallback_max:
+            errors.append(f"option_dte_fallback_min ({self.option_dte_fallback_min}) must be < option_dte_fallback_max ({self.option_dte_fallback_max})")
+
+        # Profit target validation
+        if self.take_profit_100_pct <= 0:
+            errors.append(f"take_profit_100_pct ({self.take_profit_100_pct}) must be > 0")
+        if self.take_profit_200_pct <= self.take_profit_100_pct:
+            errors.append(f"take_profit_200_pct ({self.take_profit_200_pct}) must be > take_profit_100_pct ({self.take_profit_100_pct})")
+
+        # Drawdown/loss validation (should be negative)
+        if self.kill_switch_drawdown_pct >= 0:
+            errors.append(f"kill_switch_drawdown_pct ({self.kill_switch_drawdown_pct}) should be negative (e.g., -0.25)")
+        if self.stop_loss_drawdown_pct >= 0:
+            errors.append(f"stop_loss_drawdown_pct ({self.stop_loss_drawdown_pct}) should be negative")
+
+        # Moonshot validation
+        if self.moonshot_target > self.moonshot_max:
+            errors.append(f"moonshot_target ({self.moonshot_target}) must be <= moonshot_max ({self.moonshot_max})")
+
+        # Allocation percentages should be between 0 and 1
+        for field in ['theme_a_target', 'theme_b_target', 'theme_c_target', 'moonshot_target', 'cash_minimum']:
+            value = getattr(self, field)
+            if not (0 <= value <= 1):
+                errors.append(f"{field} ({value}) must be between 0 and 1")
+
+        # Roll DTE validation
+        if self.roll_trigger_dte >= self.roll_target_dte:
+            errors.append(f"roll_trigger_dte ({self.roll_trigger_dte}) should be < roll_target_dte ({self.roll_target_dte})")
+
+        if errors:
+            from loguru import logger
+            for err in errors:
+                logger.warning(f"Config validation: {err}")
+
+        return self
+
+    @classmethod
+    def load_settings_file(cls, config_instance: "HighConvexityConfig") -> None:
+        """Load non-sensitive defaults from data/settings.json (overrides .env defaults)."""
+        if not SETTINGS_FILE.exists():
+            return
+        try:
+            import json
+            from loguru import logger
+            with open(SETTINGS_FILE, "r") as f:
+                data = json.load(f)
+            fields = getattr(cls, "model_fields", {})
+            loaded = 0
+            for key, value in data.items():
+                if key.startswith("_"):
+                    continue
+                if key in SENSITIVE_CONFIG_KEYS:
+                    continue
+                if key not in fields:
+                    continue
+                if hasattr(config_instance, key):
+                    setattr(config_instance, key, value)
+                    loaded += 1
+            if loaded:
+                logger.info(f"Loaded {loaded} settings from {SETTINGS_FILE.name}")
+        except Exception as e:
+            from loguru import logger
+            logger.warning(f"Could not load settings file {SETTINGS_FILE}: {e}")
+
     @classmethod
     def apply_overrides(cls, config_instance: "HighConvexityConfig") -> "HighConvexityConfig":
-        """Apply config overrides from Telegram edits (REQ-013).
+        """Apply settings file then Telegram overrides (REQ-013).
 
-        This is called after Pydantic loads .env values to allow
-        Telegram settings to override environment variables.
-
-        Args:
-            config_instance: Config instance with .env values loaded
-
-        Returns:
-            Config instance with overrides applied
+        Order: .env -> data/settings.json -> data/config_overrides.json (chat).
         """
+        cls.load_settings_file(config_instance)
         try:
             from src.utils.config_override_manager import ConfigOverrideManager
             overrides = ConfigOverrideManager.load_overrides()
@@ -174,12 +260,11 @@ class HighConvexityConfig(BaseSettings):
                         setattr(config_instance, key, value)
                         logger.debug(f"Override: {key}={value}")
         except Exception as e:
-            # Don't fail startup if overrides can't load
             from loguru import logger
             logger.warning(f"Could not load config overrides: {e}")
 
         return config_instance
 
 
-# Global config instance (with Telegram overrides applied)
+# Global config instance (settings file + Telegram overrides applied)
 config = HighConvexityConfig.apply_overrides(HighConvexityConfig())

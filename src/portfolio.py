@@ -9,6 +9,7 @@ from public_api_sdk import InstrumentType
 from src.client import TradingClient
 from src.market_data import MarketDataManager
 from src.config import config
+from src.utils.sdk_serializer import extract_portfolio_position_data, extract_portfolio_data
 
 
 class Position:
@@ -93,7 +94,8 @@ class Position:
         try:
             exp_date = date.fromisoformat(self.expiration)
             return (exp_date - date.today()).days
-        except:
+        except (ValueError, TypeError) as e:
+            logger.debug(f"Could not parse expiration date '{self.expiration}': {e}")
             return None
     
     def is_itm(self, underlying_price: float) -> bool:
@@ -139,30 +141,37 @@ class PortfolioManager:
             # Clear existing positions before loading fresh ones
             self.positions.clear()
             
-            # Load positions from portfolio response
+            # Load positions from portfolio response using comprehensive extraction
             # PortfolioPosition structure: instrument.symbol, quantity, cost_basis.unit_cost, etc.
             if hasattr(portfolio, 'positions') and portfolio.positions:
                 for pos in portfolio.positions:
                     try:
-                        # Extract symbol from nested instrument
-                        if not hasattr(pos, 'instrument') or not hasattr(pos.instrument, 'symbol'):
+                        # Use comprehensive serializer to extract ALL fields
+                        pos_data = extract_portfolio_position_data(pos)
+                        
+                        symbol = pos_data.get("symbol")
+                        if not symbol:
                             continue
                         
-                        symbol = pos.instrument.symbol
-                        instrument_type = pos.instrument.type if hasattr(pos.instrument, 'type') else InstrumentType.EQUITY
-                        
-                        # Extract quantity
-                        quantity = int(float(pos.quantity)) if hasattr(pos, 'quantity') and pos.quantity else 0
+                        quantity = pos_data.get("quantity") or 0
                         if quantity == 0:
                             continue
                         
-                        # Extract entry price from cost_basis
-                        entry_price = 0.0
-                        if hasattr(pos, 'cost_basis') and pos.cost_basis:
-                            if hasattr(pos.cost_basis, 'unit_cost') and pos.cost_basis.unit_cost:
-                                entry_price = float(pos.cost_basis.unit_cost)
-                            elif hasattr(pos.cost_basis, 'total_cost') and pos.cost_basis.total_cost and quantity > 0:
-                                entry_price = float(pos.cost_basis.total_cost) / quantity
+                        instrument_type_str = pos_data.get("instrument_type")
+                        if isinstance(instrument_type_str, str):
+                            # Convert string to InstrumentType enum
+                            instrument_type = InstrumentType.EQUITY
+                            if "OPTION" in instrument_type_str.upper():
+                                instrument_type = InstrumentType.OPTION
+                            elif "CRYPTO" in instrument_type_str.upper():
+                                instrument_type = InstrumentType.CRYPTO
+                        else:
+                            instrument_type = InstrumentType.EQUITY
+                        
+                        # Extract entry price (prefer unit_cost, fallback to average_cost or calculated)
+                        entry_price = pos_data.get("unit_cost") or pos_data.get("average_cost") or 0.0
+                        if entry_price == 0.0 and pos_data.get("total_cost") and quantity > 0:
+                            entry_price = pos_data.get("total_cost") / quantity
                         
                         # For options, parse OSI symbol to extract underlying, strike, expiration
                         osi_symbol = symbol if instrument_type == InstrumentType.OPTION else None
@@ -184,7 +193,8 @@ class PortfolioManager:
                                     yy = int(date_str[:2])
                                     mm = int(date_str[2:4])
                                     dd = int(date_str[4:6])
-                                    year = 2000 + yy if yy < 50 else 1900 + yy
+                                    # For OSI format, YY is always in current century (2000-2099)
+                                    year = 2000 + yy
                                     expiration = f"{year:04d}-{mm:02d}-{dd:02d}"
                                     strike = float(strike_str) / 1000.0
                                 else:
@@ -216,6 +226,26 @@ class PortfolioManager:
         except Exception as e:
             logger.error(f"Error refreshing portfolio: {e}")
             raise
+    
+    def get_portfolio_comprehensive(self) -> Dict:
+        """Get comprehensive portfolio data with ALL fields for AI consumption.
+        
+        Returns:
+            Dictionary with all portfolio fields including comprehensive position data
+        """
+        try:
+            portfolio = self.client.client.get_portfolio(self.client.account_number)
+            portfolio_data = extract_portfolio_data(portfolio)
+            
+            # Add calculated fields
+            portfolio_data["equity"] = self.get_equity()
+            portfolio_data["buying_power"] = self.get_buying_power()
+            portfolio_data["cash"] = self.get_cash()
+            
+            return portfolio_data
+        except Exception as e:
+            logger.error(f"Error getting comprehensive portfolio: {e}")
+            return {}
     
     def get_equity(self) -> float:
         """Get current portfolio equity.

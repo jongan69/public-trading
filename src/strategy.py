@@ -83,9 +83,9 @@ class HighConvexityStrategy:
                 # Placeholder: would need historical data API
                 # For now, allow entry
                 return True
-            except:
+            except Exception as e:
                 # Fallback to simplified rule
-                pass
+                logger.debug(f"SMA filter check failed: {e}")
         
         # Simplified rule: allow on up-day if previous close exists
         # For now, allow entry (can be enhanced with historical data)
