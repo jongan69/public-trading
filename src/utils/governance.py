@@ -57,6 +57,9 @@ def check_governance(
             )
 
     # 3. Max single position: no position > equity * max_single_position_pct
+    # Allow SELL of the over-weight symbol (trim); allow SELL of other symbols (doesn't worsen overweight).
+    # Block only BUY when any position is over limit.
+    order_symbol = (order_details or {}).get("symbol", "")
     positions = getattr(portfolio_manager, "positions", None) or {}
     max_single_pct = config.max_single_position_pct
     get_position_price = getattr(portfolio_manager, "get_position_price", None)
@@ -66,6 +69,10 @@ def check_governance(
             mv = pos.get_market_value(price)
             pct = mv / equity if equity else 0
             if pct > max_single_pct:
+                if action == "SELL" and sym == order_symbol:
+                    continue  # allow trim of this overweight position
+                if action == "SELL":
+                    continue  # allow trim of other positions (doesn't add to overweight)
                 return False, (
                     f"Blocked: position {sym} is {pct*100:.1f}% of equity "
                     f"(max {max_single_pct*100:.0f}%). Trim before adding."
@@ -85,10 +92,12 @@ def check_governance(
         )
 
     # 5. Moonshot cap (already enforced in strategy; redundant but explicit)
+    # Allow any SELL (trim moonshot or others); block only BUY when moonshot is over cap
     if alloc.get("moonshot", 0) > config.moonshot_max + 0.001:
-        return False, (
-            f"Blocked: moonshot allocation {alloc.get('moonshot', 0)*100:.1f}% "
-            f"exceeds cap {config.moonshot_max*100:.0f}%. Trim moonshot first."
-        )
+        if action != "SELL":
+            return False, (
+                f"Blocked: moonshot allocation {alloc.get('moonshot', 0)*100:.1f}% "
+                f"exceeds cap {config.moonshot_max*100:.0f}%. Trim moonshot first."
+            )
 
     return True, ""

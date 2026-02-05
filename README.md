@@ -30,9 +30,21 @@ src/
 ├── storage.py         # SQLite database
 ├── main.py            # Scheduler and run loop
 ├── telegram_bot.py    # Telegram + AI chat (portfolio, trades, strategy)
+├── trading_loop.py   # State machine: research → strategy → execute → observe → adjust
+├── alerts.py          # Proactive alerts (kill switch, roll, cap)
+├── analytics.py       # Performance analytics (P&L by theme, roll analysis)
+├── scenario.py        # Scenario simulation engine
+├── export_manager.py  # Trade/performance export (CSV, reports)
+├── fundamental_analysis.py  # DCF, P/E, valuation (e.g. Simply Wall St style)
 └── utils/
     ├── logger.py      # Logging configuration
-    └── account_manager.py  # Account selection and data/bot_config.json
+    ├── account_manager.py  # Account selection and data/bot_config.json
+    ├── config_override_manager.py  # Telegram overrides (config persistence)
+    ├── governance.py  # Kill switch, cash buffer, position limits
+    ├── sdk_serializer.py   # Extract full API objects for AI/chain data
+    ├── strategy_math.py   # Expected value, Kelly, risk of ruin
+    ├── strategy_presets.py # Preset strategy definitions
+    └── trading_hours.py   # Market hours, same-day option cutoff
 ```
 
 ## Features
@@ -73,6 +85,20 @@ src/
 - **What-if Simulations**: Preview position changes before executing
 - **Performance Analytics**: Track P&L by theme, roll success, execution quality—read-only, no autonomous strategy changes
 - **Dry-run mode**: Test without placing real orders
+
+### Trading loop (state machine)
+
+The bot can run a **periodic trading loop** that prioritizes balance increase over time while keeping the chat interface primary:
+
+1. **Research** — Refresh portfolio, balance trend, market news (SPY + theme underlyings), alerts.
+2. **Strategy preview** — Run strategy in dry-run; planned orders are stored.
+3. **Execute** — Optionally run real orders (only if `TRADING_LOOP_EXECUTE_TRADES=true` and not global dry-run).
+4. **Observe** — Record outcome (equity, 7d trend, performance summary).
+5. **Adjust** — Rule-based suggestions (e.g. reduce moonshot after drawdown > 15%); stored for chat/AI.
+
+**Config (env):** `TRADING_LOOP_ENABLED`, `TRADING_LOOP_INTERVAL_MINUTES` (default 240), `TRADING_LOOP_EXECUTE_TRADES` (default false), `TRADING_LOOP_TELEGRAM_NOTIFY`.
+
+**Telegram:** `/loop_status` — state and last outcome; `/run_cycle` — run one cycle now; `/loop on|off|status` — enable/disable periodic loop. AI tools: `get_trading_loop_status`, `run_trading_cycle`.
 
 ## Installation
 
@@ -144,8 +170,11 @@ python -m src.telegram_bot
 Then message your bot on Telegram. You can have full conversation about market news, options chains, and building custom strategies:
 
 - **Portfolio & strategy**: *"Portfolio summary"*, *"What would the strategy do?"*, *"Run rebalance"*, *"Show config"*
+- **Balance trends**: *"How has my equity changed over time?"*, *"Balance trend last 30 days"* — equity/cash snapshots over time
+- **Trading loop**: *"What did the loop find?"*, *"Run a cycle"*, *"Loop status"* — research → strategy preview → optional execute → observe → adjust; `/loop_status`, `/run_cycle`, `/loop on|off|status`
 - **Market news**: *"What's the news on AAPL?"*, *"Any Fed news?"*, *"Earnings this week"*
 - **Options chains**: *"Options chain for UMC"*, *"Expirations for GME"*, *"Calls and puts for TSLA"*
+- **Fundamental analysis**: *"Is AAPL cheap or expensive?"*, *"DCF for TSLA"*, *"Valuation of GME"* — DCF, P/E, volatility, valuation score
 - **Polymarket odds**: *"Polymarket odds on Fed"*, *"Prediction markets Bitcoin"*, *"Election odds"* — discuss and factor into options/market context
 - **Images**: Send a screenshot of a chart, strategy doc, or table — the bot describes it and can help implement or discuss vs portfolio/options
 - **Build strategy via chat**: *"Set theme A to 40%"*, *"Use 60–90 DTE only"*, *"Set themes to AAPL, MSFT, GOOGL"*, *"I want 25% cash"*
@@ -165,9 +194,9 @@ The repo uses the **do-work** skill for Claude Code task management: capture req
 
 Structure: `do-work/pending/` (pending REQs), `do-work/user-requests/` (verbatim input per request), `do-work/working/` (in progress), `do-work/archive/` (completed). Skill is installed at `.agents/skills/do-work`.
 
-**Pending (in queue):** All pending REQs live in `do-work/pending/`: REQ-010 (universal accessibility feature map), REQ-013 (config persistence), REQ-014 (proactive alerts), REQ-015 (daily briefing), REQ-016 (export trades/performance), REQ-017 (product backlog). When you run `do work run`, process from here; when a REQ is completed, move it to `archive/<user-request>/`.
+**Pending (in queue):** All pending REQs live in `do-work/pending/`: REQ-010 (universal accessibility feature map), REQ-017 (product backlog), REQ-020 (Monte Carlo returns engine), REQ-021 (smart hybrid allocation), REQ-022 (AI tools: analyze portfolio, compare strategies). When you run `do work run`, process from here; when a REQ is completed, move it to `archive/<user-request>/` or `archive/` as appropriate.
 
-**Completed (archived):** All completed REQs for a user request live under `do-work/archive/<user-request>/` (e.g. `archive/UR-001/`, `archive/UR-002/`). UR-002 completed: REQ-002 through REQ-009, REQ-011, REQ-012 (governance, execution tier, decision compression, transparency, emotional pressure, scenario engine, human control, learning loop, learning-loop persistence, cooldown headless). UR-001 completed: REQ-001 (market data hedge fund chat).
+**Completed (archived):** Completed REQs live under `do-work/archive/` (top-level or per user request). UR-002: REQ-002 through REQ-009, REQ-011, REQ-012, REQ-013 (config persistence), REQ-014 (proactive alerts), REQ-018 (multi-asset allocation), REQ-019 (strategy math / risk of ruin). Top-level archive: REQ-015 (daily briefing), REQ-016 (export trades/performance). UR-001: REQ-001 (market data hedge fund chat).
 
 ### Dry Run Mode
 
@@ -210,17 +239,20 @@ strategy = HighConvexityStrategy(portfolio_manager, data_manager, execution_mana
 # Run daily logic (returns list of order dicts: action, symbol, quantity, price)
 orders = strategy.run_daily_logic()
 
-# Execute orders (each returns result dict or None)
+# Execute orders (each returns: success = dict with order_id, symbol, etc.; failure = dict with ok=False, error=<reason>)
 for order_details in orders:
     result = execution_manager.execute_order(order_details)
-    print(result)
+    if isinstance(result, dict) and result.get("ok") is False:
+        print("Blocked:", result.get("error"))
+    else:
+        print(result)
 ```
 
 For full behavior (kill switch, storage, scheduling), use `TradingBot` from `src.main` or run `python run.py`.
 
 ## Configuration
 
-All configuration is managed through environment variables in `.env`. Values below match `src/config.py` and `.env.example`.
+**Sensitive values** (API keys, tokens) stay in `.env` only. **Non-sensitive settings** live in `data/settings.json` and can be updated in chat; chat overrides are saved to `data/config_overrides.json`. You can still set any variable in `.env` to override file values. Full list of keys is in `src/config.py` and `data/settings.json`.
 
 ### Strategy Universe
 - `THEME_UNDERLYINGS`: Comma-separated list (default: "UMC,TE,AMPX")
@@ -311,27 +343,28 @@ Access via `get_performance_summary` tool in Telegram. This is read-only analyti
 - `LOG_LEVEL`: DEBUG, INFO, WARNING, ERROR (default: INFO)
 - `LOG_FILE`: Log file path (default: "logs/high_convexity_bot.log")
 
+### Trading loop
+- `TRADING_LOOP_ENABLED`: Enable periodic loop (default: false)
+- `TRADING_LOOP_INTERVAL_MINUTES`: Interval in minutes (default: 240)
+- `TRADING_LOOP_EXECUTE_TRADES`: Execute real trades in loop (default: false; preview only unless true)
+- `TRADING_LOOP_TELEGRAM_NOTIFY`: Notify via Telegram on cycle completion (default: true)
+
 ### Telegram + AI
 - `TELEGRAM_BOT_TOKEN`: Bot token from BotFather (required for Telegram bot)
 - `OPENAI_API_KEY`: OpenAI API key for AI chat (required for Telegram bot)
 - `ALLOWED_TELEGRAM_USER_IDS`: Comma-separated user IDs allowed to execute trades / change config (empty = read-only for all)
 
-### Config Persistence via Telegram
+### Config: settings file and chat overrides
 
-When you update config settings via Telegram (allocations, option rules, theme symbols), changes are automatically saved to `data/config_overrides.json` and persist across restarts.
+Non-sensitive defaults are in **`data/settings.json`**. When you change settings via Telegram (allocations, option rules, theme symbols, or **update_config_setting(key, value)** for any setting), changes are saved to **`data/config_overrides.json`** and persist across restarts.
 
-**Precedence order** (highest to lowest):
-1. **Telegram overrides** (`data/config_overrides.json`) - WINS
-2. Environment variables (`.env`)
-3. Hardcoded defaults (`src/config.py`)
+**Precedence** (highest to lowest):
+1. **Chat overrides** (`data/config_overrides.json`)
+2. **Environment** (`.env`) – overrides file
+3. **Settings file** (`data/settings.json`) – non-sensitive defaults
+4. **Code defaults** (`src/config.py`)
 
-**To view your changes**: Ask the bot "show my config changes" or "what settings did I change?"
-
-**To reset Telegram changes**: Delete `data/config_overrides.json` and restart the bot.
-
-**To force a specific value**: Set it in `.env` and delete `data/config_overrides.json`.
-
-**Best practice**: Use `.env` for initial setup and infrastructure settings. Use Telegram for dynamic strategy adjustments during trading.
+**In chat**: Use "show config", "show my config changes", or "set dry_run to true" (and **update_config_setting** for any key). To reset chat changes: delete `data/config_overrides.json` and restart.
 
 ### Proactive Alerts (REQ-014)
 
@@ -490,6 +523,153 @@ Risk of ruin (30% drawdown): 2.3% over 10,000 trials
 - Assess long-term survival probability under different risk levels
 - Compare multiple strategies quantitatively
 
+### Monte Carlo Returns Engine (REQ-020)
+
+Advanced Monte Carlo simulation for projecting strategy outcomes over time with full distribution analysis.
+
+**What It Provides**:
+- **Full Distribution**: Median, mean, 5th and 95th percentile outcomes from thousands of simulated paths
+- **Max Drawdown Risk**: Probability of capital falling below 50% of initial (risk of ruin metric)
+- **Strategy Testing**: Test any strategy profile (preset or custom) at any capital level and risk fraction
+
+**Telegram Tools**:
+- Ask: "Run Monte Carlo for Daily 3% Grind at $10k with 2% risk per trade"
+- Ask: "What are the expected returns for my strategy?"
+- Ask: "Simulate outcomes with 60% win rate, 5% avg win, 3% avg loss"
+
+**Example Output**:
+```
+Monte Carlo Simulation: Daily 3% Grind
+Capital: $10,000
+Risk per trade: 2.0%
+
+Median outcome: $10,482
+Mean outcome: $10,534
+5th percentile: $9,234
+95th percentile: $11,892
+Max drawdown risk (50% loss): 0.0%
+```
+
+**How It Works**: Runs 5,000 simulations of a full trading year (trades_per_year steps), each time betting capital × risk_fraction with strategy win rate and win/loss sizes. Provides realistic outcome distribution accounting for variance and compounding.
+
+**Use Cases**:
+- Project realistic outcomes before committing to a strategy
+- Understand downside risk and upside potential
+- Compare different risk fractions for same strategy
+- Validate strategy edge with statistical confidence
+
+### Smart Hybrid Allocation (REQ-021)
+
+Split portfolio between core (conservative) and opportunistic (aggressive) strategies with independent Monte Carlo analysis for each bucket.
+
+**What It Provides**:
+- **Dual-Bucket Approach**: Separate core (75% default) and opportunistic (25% default) allocations
+- **Per-Bucket Strategies**: Core uses High Conviction, opportunistic uses Daily 3% Grind (configurable)
+- **Independent Analysis**: Separate Kelly fractions and Monte Carlo for each bucket
+- **Conservative Sizing**: Opportunistic Kelly is throttled (50% of full Kelly) for additional safety
+
+**Telegram Tools**:
+- Ask: "Show me smart hybrid allocation"
+- Ask: "What if I split 80% core and 20% opportunistic?"
+- Ask: "Analyze core vs opportunistic approach"
+
+**Example Output**:
+```
+Smart Hybrid Allocation
+Portfolio: $10,000
+
+Allocation:
+  Core (75%): $7,500
+  Opportunistic (25%): $2,500
+
+Core Bucket (High Conviction):
+  Kelly fraction: 25.0%
+  Median outcome: $8,234
+  5th percentile: $5,103
+  95th percentile: $13,842
+  Max drawdown risk: 5.2%
+
+Opportunistic Bucket (Daily 3% Grind):
+  Kelly fraction: 6.2% (throttled)
+  Median outcome: $2,621
+  5th percentile: $2,312
+  95th percentile: $2,987
+  Max drawdown risk: 0.0%
+
+Combined expected outcome (sum of medians): $10,855
+```
+
+**How It Works**: Splits portfolio by percentage, applies appropriate strategy to each bucket (High Conviction for core, Daily 3% Grind for opportunistic), calculates Kelly for each, runs separate Monte Carlo simulations. Opportunistic Kelly is throttled to reduce risk in the aggressive bucket.
+
+**Use Cases**:
+- Diversify risk across conservative and aggressive strategies
+- Optimize allocation between different risk profiles
+- Balance upside potential with downside protection
+- Compare hybrid approach vs single-strategy allocation
+
+### Portfolio Analysis Tools (REQ-022)
+
+AI-facing tools for comprehensive portfolio and strategy analysis, enabling natural language queries about allocation and strategy comparison.
+
+**What It Provides**:
+- **analyze_portfolio**: Complete portfolio breakdown by asset type (equity, crypto, bonds, etc.) and by theme (theme_a, theme_b, moonshot, etc.)
+- **compare_strategies**: Side-by-side Monte Carlo comparison of all preset strategies at current capital
+- **Smart Integration**: All tools exposed to AI via Telegram for natural language access
+
+**Telegram Tools**:
+- Ask: "How is my portfolio allocated?" → analyze_portfolio
+- Ask: "Compare Daily Grind vs High Conviction" → compare_strategies
+- Ask: "Which strategy is better for my capital?" → compare_strategies
+- Ask: "Show me hybrid allocation" → get_smart_hybrid
+
+**Example Interactions**:
+```
+User: "How is my portfolio allocated?"
+Bot: [Calls analyze_portfolio]
+     Portfolio Analysis
+     Total Value: $10,523.45
+     Cash: $2,104.69
+
+     Allocation by Asset Type:
+       equity: 72.5% ($7,629.50)
+       cash: 27.5% ($2,893.95)
+
+     Allocation by Theme:
+       theme_a: 35.0%
+       theme_b: 30.0%
+       moonshot: 20.0%
+       cash: 15.0%
+
+User: "Compare strategies"
+Bot: [Calls compare_strategies]
+     Strategy Comparison ($10,523 capital)
+
+     Daily 3% Grind:
+       Kelly fraction: 12.5%
+       Median outcome: $11,024
+       5th percentile: $9,876
+       95th percentile: $12,345
+       Max drawdown risk: 0.0%
+
+     High Conviction:
+       Kelly fraction: 25.0%
+       Median outcome: $11,582
+       5th percentile: $7,234
+       95th percentile: $18,942
+       Max drawdown risk: 8.3%
+```
+
+**How It Works**: Three main functions:
+1. `analyze_portfolio()` - Pulls portfolio data from PortfolioManager and formats both asset type and theme allocations
+2. `compare_strategies()` - Runs Monte Carlo for all preset strategies with their Kelly fractions, returns side-by-side results
+3. `get_smart_hybrid()` - Combines hybrid allocation with full Monte Carlo analysis for both buckets
+
+**Use Cases**:
+- Ask natural language questions about portfolio composition
+- Compare multiple strategies without manual calculation
+- Get instant Monte Carlo analysis for any approach
+- Make data-driven decisions about strategy selection
+
 ## Database
 
 The bot uses SQLite to store:
@@ -499,7 +679,7 @@ The bot uses SQLite to store:
 - **Fills**: Fill details
 - **Contracts**: Chosen option contracts
 - **Config Snapshots**: Configuration used each run
-- **Portfolio Snapshots**: Daily portfolio state
+- **Portfolio Snapshots**: Equity, cash, buying power, allocations over time (for balance trends and trading loop observe step)
 - **Equity History**: Equity over time (for kill switch)
 - **Bot State**: Trading pause status, cool-down state, pending confirmations
 

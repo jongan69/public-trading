@@ -105,3 +105,31 @@ def test_get_cash_fallback_to_cash_only_buying_power(mock_client_object, mock_da
     cash = pm.get_cash()
     assert cash == 600.0
     assert isinstance(cash, float)
+
+
+def test_get_portfolio_comprehensive_returns_dict_with_positions(mock_client_object, mock_data_manager):
+    """Test get_portfolio_comprehensive returns dict with equity, buying_power, cash, positions."""
+    from unittest.mock import patch
+
+    portfolio_mock = Mock()
+    portfolio_mock.positions = []
+    portfolio_mock.equity = 1200.0
+    portfolio_mock.buying_power = mock_client_object.client.get_portfolio.return_value.buying_power
+    portfolio_mock.cash = 300.0
+    mock_client_object.client.get_portfolio.return_value = portfolio_mock
+
+    with patch("src.portfolio.extract_portfolio_data") as extract:
+        extract.return_value = {
+            "equity": 0.0,
+            "buying_power": 0.0,
+            "cash": 0.0,
+            "positions": [{"symbol": "AAPL", "quantity": 10, "market_value": 1500.0}],
+        }
+        pm = PortfolioManager(mock_client_object, mock_data_manager)
+        result = pm.get_portfolio_comprehensive()
+
+    assert result["equity"] == 1200.0
+    assert result["buying_power"] == 600.0
+    assert result["cash"] == 300.0
+    assert len(result["positions"]) == 1
+    assert result["positions"][0]["symbol"] == "AAPL"

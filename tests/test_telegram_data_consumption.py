@@ -42,45 +42,35 @@ def test_safe_float():
 
 @pytest.fixture
 def mock_bot_for_options():
-    """Minimal TradingBot mock with data_manager returning option chain (Quote-like)."""
+    """Minimal TradingBot mock with data_manager returning comprehensive option chain (dict shape)."""
+    from datetime import date, timedelta
     bot = Mock()
     dm = Mock()
     bot.data_manager = dm
 
-    class MockQuote:
-        def __init__(self, symbol, bid, ask, open_interest=None, volume=None):
-            self.instrument = Mock()
-            self.instrument.symbol = symbol
-            self.bid = Decimal(str(bid)) if bid is not None else None
-            self.ask = Decimal(str(ask)) if ask is not None else None
-            self.open_interest = open_interest
-            self.volume = volume
-
-    chain = Mock()
-    # OSI: 00010000 = strike 10, 00012000 = strike 12
-    chain.calls = [
-        MockQuote("UMC260220C00010000", 8.50, 10.30, 100, 50),
-        MockQuote("UMC260220C00012000", 7.00, 9.00, None, None),
-    ]
-    chain.puts = [
-        MockQuote("UMC260220P00010000", 10.00, 11.90),
-    ]
-
-    dm.get_option_expirations.return_value = []
-    dm.get_option_chain.return_value = chain
-    dm.get_quote.return_value = 10.13
-    dm.compute_max_pain.return_value = None  # optional; bot handles None
-
-    # Make get_option_expirations return a list of dates so chain is used
-    from datetime import date, timedelta
     today = date.today()
-    dm.get_option_expirations.return_value = [today + timedelta(days=30)]
+    exp_date = today + timedelta(days=30)
+    dm.get_option_expirations.return_value = [exp_date]
+
+    # Production: get_option_chain_comprehensive returns dict with calls/puts as list of dicts
+    chain_data = {
+        "spot_price": 10.13,
+        "max_pain_strike": None,
+        "calls": [
+            {"symbol": "UMC260220C00010000", "strike": 10.0, "bid": 8.50, "ask": 10.30, "mid": 9.40, "open_interest": 100, "volume": 50},
+            {"symbol": "UMC260220C00012000", "strike": 12.0, "bid": 7.00, "ask": 9.00, "mid": 8.00, "open_interest": None, "volume": None},
+        ],
+        "puts": [
+            {"symbol": "UMC260220P00010000", "strike": 10.0, "bid": 10.00, "ask": 11.90, "mid": 10.95, "open_interest": None, "volume": None},
+        ],
+    }
+    dm.get_option_chain_comprehensive.return_value = chain_data
 
     return bot, dm
 
 
 def test_run_tool_get_options_chain_consumes_quote_data(mock_bot_for_options):
-    """Options chain output must contain symbol= and bid/ask from Quote (Decimal-safe)."""
+    """Options chain output must contain symbol= and bid/ask from comprehensive chain dict."""
     bot, dm = mock_bot_for_options
     result = run_tool(
         "get_options_chain",
@@ -94,30 +84,22 @@ def test_run_tool_get_options_chain_consumes_quote_data(mock_bot_for_options):
     assert "strike $10.00" in result
     assert "spot $10.13" in result
     assert "Use the 'symbol' value" in result
+    dm.get_option_chain_comprehensive.assert_called_once()
 
 
 def test_run_tool_get_options_chain_handles_string_bid_ask():
-    """Options chain should handle bid/ask as strings (API sometimes returns string)."""
+    """Options chain should handle bid/ask as numbers in dict (production shape)."""
+    from datetime import date, timedelta
     bot = Mock()
     dm = Mock()
     bot.data_manager = dm
-
-    class MockQuoteStr:
-        instrument = Mock()
-        instrument.symbol = "UMC260220C00001000"
-        bid = "8.50"
-        ask = "10.30"
-        open_interest = None
-        volume = None
-
-    chain = Mock()
-    chain.calls = [MockQuoteStr()]
-    chain.puts = []
-    from datetime import date, timedelta
     dm.get_option_expirations.return_value = [date.today() + timedelta(days=30)]
-    dm.get_option_chain.return_value = chain
-    dm.get_quote.return_value = "10.13"
-    dm.compute_max_pain.return_value = None
+    dm.get_option_chain_comprehensive.return_value = {
+        "spot_price": 10.13,
+        "max_pain_strike": None,
+        "calls": [{"symbol": "UMC260220C00001000", "strike": 1.0, "bid": 8.50, "ask": 10.30, "mid": 9.40}],
+        "puts": [],
+    }
 
     result = run_tool(
         "get_options_chain",
@@ -187,6 +169,8 @@ def test_run_tool_get_portfolio_uses_manager_numbers():
         "cash": 0.369,
     }
     pm.positions = {}
+    # Production: get_portfolio_comprehensive returns dict with positions list
+    pm.get_portfolio_comprehensive.return_value = {"positions": []}
 
     result = run_tool("get_portfolio", {}, bot, user_id=0)
 
@@ -197,3 +181,47 @@ def test_run_tool_get_portfolio_uses_manager_numbers():
     pm.get_equity.assert_called_once()
     pm.get_cash.assert_called_once()
     pm.get_buying_power.assert_called_once()
+    pm.get_portfolio_comprehensive.assert_called_once()
+
+
+# --- get_fundamental_analysis ---
+
+
+@patch("src.fundamental_analysis.FundamentalAnalysis")
+def test_run_tool_get_fundamental_analysis_returns_formatted_output(MockFA):
+    """get_fundamental_analysis tool is invoked with symbol and returns formatted analysis."""
+    bot = Mock()
+    mock_analyzer = Mock()
+    mock_analyzer.get_comprehensive_analysis.return_value = {
+        "symbol": "GME",
+        "analysis_date": "2026-02-04T12:00:00",
+        "current_price": 25.50,
+        "dcf_analysis": {
+            "intrinsic_value_per_share": 104.57,
+            "discount_to_intrinsic": 75.3,
+            "valuation_result": "UNDERVALUED",
+            "free_cash_flow_ltm": 563_200_000,
+        },
+        "pe_analysis": {"current_pe": 27.45, "industry_pe": 20.37, "result": "ABOUT_RIGHT"},
+        "volatility_analysis": {"periods": {"1wk": {"total_return_pct": 7.7, "volatility_pct": 45.0}}},
+        "valuation_score": {"valuation_score": 2.0, "max_score": 6, "breakdown": {}},
+    }
+    MockFA.return_value = mock_analyzer
+
+    result = run_tool("get_fundamental_analysis", {"symbol": "GME"}, bot, user_id=0)
+
+    assert "GME" in result
+    assert "25.50" in result
+    assert "104.57" in result
+    assert "75.3" in result
+    assert "UNDERVALUED" in result
+    assert "27.45" in result
+    assert "Valuation Score" in result or "valuation" in result.lower()
+    mock_analyzer.get_comprehensive_analysis.assert_called_once_with("GME")
+
+
+def test_run_tool_get_fundamental_analysis_requires_symbol():
+    """get_fundamental_analysis with missing symbol returns error."""
+    bot = Mock()
+    result = run_tool("get_fundamental_analysis", {}, bot, user_id=0)
+    assert "required" in result.lower() or "symbol" in result.lower()

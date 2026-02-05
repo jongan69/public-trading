@@ -9,6 +9,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta, timezone
 from loguru import logger
 
+from public_api_sdk import InstrumentType
 from src.storage import StorageManager
 from src.portfolio import PortfolioManager
 from src.config import config
@@ -60,12 +61,11 @@ class AlertManager:
         Returns:
             Alert dict if warning should trigger, None otherwise
         """
-        # Get current drawdown
-        portfolio = self.portfolio_manager.get_portfolio()
-        if not portfolio or "drawdown" not in portfolio:
+        equity = self.portfolio_manager.get_equity()
+        high_equity = self.storage.get_equity_high_last_n_days(config.kill_switch_lookback_days)
+        if not high_equity or high_equity <= 0:
             return None
-
-        drawdown = portfolio["drawdown"]
+        drawdown = (equity - high_equity) / high_equity
         warning_threshold = -config.kill_switch_warning_pct
         kill_switch_threshold = -config.kill_switch_drawdown_pct
 
@@ -99,24 +99,13 @@ class AlertManager:
             List of alert dicts for positions needing rolls
         """
         alerts = []
-
-        # Get current positions
-        portfolio = self.portfolio_manager.get_portfolio()
-        if not portfolio or "positions" not in portfolio:
-            return alerts
-
         roll_trigger_dte = config.roll_trigger_dte
         warning_dte = roll_trigger_dte + config.roll_warning_days_before
 
-        # Check each position
-        for pos in portfolio["positions"]:
-            # Skip if not an option
-            if pos.get("asset_type") != "option":
+        for symbol, pos in self.portfolio_manager.positions.items():
+            if pos.instrument_type != InstrumentType.OPTION:
                 continue
-
-            symbol = pos.get("symbol")
-            dte = pos.get("dte")
-
+            dte = pos.get_dte()
             if dte is None or not symbol:
                 continue
 
@@ -151,12 +140,7 @@ class AlertManager:
         Returns:
             Alert dict if warning should trigger, None otherwise
         """
-        # Get current allocations
-        portfolio = self.portfolio_manager.get_portfolio()
-        if not portfolio or "allocations" not in portfolio:
-            return None
-
-        allocations = portfolio["allocations"]
+        allocations = self.portfolio_manager.get_current_allocations()
         moonshot_alloc = allocations.get("moonshot", 0.0)
 
         warning_threshold = config.cap_warning_threshold_pct

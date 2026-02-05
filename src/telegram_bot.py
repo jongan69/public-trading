@@ -479,6 +479,154 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_deep_research",
+            "description": "Run comprehensive deep research on one or more symbols using multi-step analysis (fundamental, technical, sentiment, comparative). Returns structured research report with chain-of-thought reasoning, scores (0-10), recommendation (BUY/HOLD/SELL), and confidence level (%). Use when user asks for 'deep research', 'comprehensive analysis', 'should I buy X', 'analyze X', 'compare X vs Y', or wants detailed research beyond quick fundamentals. Set show_reasoning=true to include full chain-of-thought steps.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbols": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of symbols to research (e.g. ['AAPL'] for single-symbol or ['AAPL', 'MSFT'] for comparison)"
+                    },
+                    "research_type": {
+                        "type": "string",
+                        "enum": ["deep_symbol", "comparative", "theme_candidate"],
+                        "description": "Type of research: deep_symbol (single symbol comprehensive), comparative (compare multiple), theme_candidate (evaluate for theme inclusion). Default: deep_symbol"
+                    },
+                    "show_reasoning": {
+                        "type": "boolean",
+                        "description": "If true, include full chain-of-thought reasoning in response (default false)"
+                    }
+                },
+                "required": ["symbols"]
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "evaluate_theme_change",
+            "description": "Evaluate whether to change a theme's symbol based on deep research. Compares current theme holdings vs candidate symbols using comprehensive analysis (fundamental, technical, sentiment). Returns recommendation with confidence score and detailed reasoning. Use when user asks 'should I change theme A', 'research alternatives for theme B', 'evaluate new symbols for theme C', or 'what else could I invest in for theme X'. If candidate_symbols not provided, bot will research alternatives based on sector/industry.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "theme_name": {
+                        "type": "string",
+                        "enum": ["theme_a", "theme_b", "theme_c"],
+                        "description": "Which theme to evaluate (theme_a, theme_b, or theme_c)"
+                    },
+                    "candidate_symbols": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional: alternative symbols to consider (e.g. ['NVDA', 'AMD']). If not provided, bot will research alternatives automatically."
+                    }
+                },
+                "required": ["theme_name"]
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "approve_theme_change",
+            "description": "Approve and execute a pending theme change proposal. Updates config with new theme symbols and persists change to config_overrides.json. ONLY call this after user explicitly confirms they want to proceed with the proposed theme change (e.g., 'yes approve it', 'do it', 'execute the change'). Checks governance rules (cooldown, confidence thresholds, kill switch) before executing. Returns success/failure message with details.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "proposal_id": {
+                        "type": "integer",
+                        "description": "ID of the theme change proposal to approve (from evaluate_theme_change)"
+                    }
+                },
+                "required": ["proposal_id"]
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "analyze_portfolio",
+            "description": "Get comprehensive portfolio analysis including total value and allocation breakdown by both asset type (equity, crypto, bonds, etc.) and theme (theme_a, theme_b, moonshot, etc.). Use when user asks 'how is my portfolio allocated', 'show portfolio breakdown', 'what's my allocation', or wants to understand portfolio composition. Combines both views for complete picture.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "compare_strategies",
+            "description": "Compare preset strategies (Daily 3% Grind, High Conviction) using Monte Carlo simulations. Shows median/mean outcomes, percentiles, and max drawdown risk for each strategy at current or specified capital level. Use when user asks 'which strategy is better', 'compare daily grind vs high conviction', 'what's the expected outcome', or wants to evaluate different trading approaches.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "capital": {
+                        "type": "number",
+                        "description": "Capital to analyze (default: current equity). Use current equity if not specified."
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "monte_carlo_returns",
+            "description": "Run Monte Carlo simulation for a custom or preset strategy. Returns distribution of outcomes (median, mean, 5th/95th percentiles) and max drawdown risk. Use when user asks 'what if I use X strategy', 'simulate returns', 'what's my risk with this approach', or wants detailed Monte Carlo analysis.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "capital": {
+                        "type": "number",
+                        "description": "Starting capital for simulation"
+                    },
+                    "risk_fraction": {
+                        "type": "number",
+                        "description": "Fraction of capital risked per trade (e.g., 0.02 = 2%)"
+                    },
+                    "preset_name": {
+                        "type": "string",
+                        "description": "Optional preset strategy name ('daily_3pct_grind' or 'high_conviction')"
+                    },
+                    "win_rate": {
+                        "type": "number",
+                        "description": "Custom win rate as decimal (e.g., 0.55 = 55%)"
+                    },
+                    "avg_win": {
+                        "type": "number",
+                        "description": "Custom average win as fraction (e.g., 0.03 = 3%)"
+                    },
+                    "avg_loss": {
+                        "type": "number",
+                        "description": "Custom average loss as fraction (e.g., 0.03 = 3%)"
+                    },
+                    "trades_per_year": {
+                        "type": "integer",
+                        "description": "Number of trades per year (default 220)"
+                    }
+                },
+                "required": ["capital", "risk_fraction"]
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_smart_hybrid",
+            "description": "Analyze smart hybrid allocation: split portfolio into core (conservative, e.g., High Conviction) and opportunistic (aggressive, e.g., Daily 3% Grind) buckets with separate Monte Carlo analysis for each. Shows allocation split, Kelly fractions, and expected outcomes for both buckets. Use when user asks 'hybrid allocation', 'core vs opportunistic', 'split strategy', or wants diversified approach.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "core_pct": {
+                        "type": "number",
+                        "description": "Percentage allocated to core bucket (default 0.75 = 75%)"
+                    },
+                },
+            },
+        },
+    },
 ]
 
 SYSTEM_PROMPT = """You are a **professional hedge fund manager** AI for a high-convexity options/equity portfolio connected to Public.com. The user talks to you via Telegram. Your role: synthesize portfolio, risk, and market data; give **clear, actionable recommendations** with rationale; and explain in concise, institutional language where appropriate.
@@ -2111,6 +2259,334 @@ def run_tool(tool_name: str, arguments: Dict[str, Any], bot_instance: TradingBot
                 logger.exception("export_performance_report failed")
                 return f"Error generating report: {str(e)}"
 
+        if tool_name == "run_deep_research":
+            try:
+                from src.research_engine import ResearchEngine
+
+                symbols = arguments.get("symbols", [])
+                if not symbols or not isinstance(symbols, list):
+                    return "Error: symbols must be a non-empty list"
+
+                research_type = arguments.get("research_type", "deep_symbol")
+                show_reasoning = arguments.get("show_reasoning", False)
+
+                research_engine = ResearchEngine(bot_instance)
+
+                lines = []
+                lines.append(f"# Deep Research: {', '.join(symbols)}")
+                lines.append("")
+
+                if research_type == "comparative" and len(symbols) >= 2:
+                    # Comparative research
+                    reports = research_engine.comparative_research(symbols)
+
+                    lines.append("## Comparative Analysis")
+                    lines.append("")
+
+                    for symbol, report in reports.items():
+                        lines.append(f"### {symbol}")
+                        lines.append(f"**Overall Score:** {report.overall_score:.1f}/10")
+                        lines.append(f"**Recommendation:** {report.recommendation}")
+                        lines.append(f"**Confidence:** {report.confidence:.0%}")
+                        lines.append("")
+                        lines.append("**Breakdown:**")
+                        lines.append(f"• Fundamental: {report.fundamental_score:.1f}/10")
+                        lines.append(f"• Technical: {report.technical_score:.1f}/10")
+                        lines.append(f"• Sentiment: {report.sentiment_score:.1f}/10")
+                        lines.append("")
+
+                        # Store in database
+                        bot_instance.storage.save_research_report(report.to_dict())
+
+                    # Comparison summary
+                    best_symbol = max(reports.items(), key=lambda x: x[1].overall_score)
+                    lines.append(f"**Best Option:** {best_symbol[0]} (score {best_symbol[1].overall_score:.1f}/10)")
+
+                else:
+                    # Single symbol deep research
+                    symbol = symbols[0]
+                    report = research_engine.deep_research_symbol(symbol)
+
+                    lines.append(f"**Overall Score:** {report.overall_score:.1f}/10")
+                    lines.append(f"**Recommendation:** {report.recommendation}")
+                    lines.append(f"**Confidence:** {report.confidence:.0%}")
+                    lines.append("")
+
+                    lines.append("## Breakdown")
+                    lines.append(f"• Fundamental: {report.fundamental_score:.1f}/10")
+                    lines.append(f"• Technical: {report.technical_score:.1f}/10")
+                    lines.append(f"• Sentiment: {report.sentiment_score:.1f}/10")
+                    lines.append("")
+
+                    if report.key_findings:
+                        lines.append("## Key Findings")
+                        for finding in report.key_findings[:5]:
+                            lines.append(f"• {finding}")
+                        lines.append("")
+
+                    if report.risks:
+                        lines.append("## Risks")
+                        for risk in report.risks[:3]:
+                            lines.append(f"• {risk}")
+                        lines.append("")
+
+                    # Store in database
+                    bot_instance.storage.save_research_report(report.to_dict())
+
+                    if show_reasoning and report.reasoning_chain:
+                        lines.append("## Chain-of-Thought Reasoning")
+                        for step in report.reasoning_chain[:10]:
+                            confidence_str = f" ({step.confidence:.0%})" if step.confidence else ""
+                            lines.append(f"\n**Step {step.step_number}: {step.step_name}{confidence_str}**")
+                            lines.append(f"{step.reasoning[:300]}")
+
+                return "\n".join(lines)
+
+            except Exception as e:
+                logger.exception("run_deep_research failed")
+                return f"Error running deep research: {str(e)}"
+
+        if tool_name == "evaluate_theme_change":
+            try:
+                from src.research_engine import ResearchEngine
+                from src.utils.theme_governance import check_theme_change_governance
+
+                theme_name = arguments.get("theme_name")
+                candidates = arguments.get("candidate_symbols", [])
+
+                if not theme_name or theme_name not in ["theme_a", "theme_b", "theme_c"]:
+                    return "Error: theme_name must be one of: theme_a, theme_b, theme_c"
+
+                research_engine = ResearchEngine(bot_instance)
+
+                # Get current theme symbol
+                theme_idx = {"theme_a": 0, "theme_b": 1, "theme_c": 2}[theme_name]
+                if theme_idx >= len(config.theme_underlyings):
+                    return f"Error: {theme_name} not configured (only {len(config.theme_underlyings)} themes exist)"
+
+                current_symbol = config.theme_underlyings[theme_idx]
+                current_symbols = [current_symbol]
+
+                # If no candidates provided, use smart alternative selection
+                if not candidates:
+                    logger.info(f"Getting smart alternatives for {current_symbol}")
+                    candidates = research_engine.get_smart_theme_alternatives(current_symbol, num_alternatives=3)
+                    logger.info(f"Smart alternatives for {theme_name}: {candidates}")
+
+                # Research theme change
+                proposal = research_engine.research_theme_change(current_symbols, candidates)
+                proposal.theme_name = theme_name
+
+                # Store proposal
+                proposal_id = bot_instance.storage.save_theme_change_proposal(proposal.to_dict())
+
+                # Check governance
+                can_change, reason = check_theme_change_governance(bot_instance.storage, proposal.to_dict())
+
+                lines = []
+                lines.append(f"# Theme Change Evaluation: {theme_name.upper()}")
+                lines.append("")
+                lines.append(f"**Current:** {', '.join(current_symbols)}")
+                lines.append(f"**Proposed:** {', '.join(proposal.proposed_symbols)}")
+                lines.append(f"**Recommendation Score:** {proposal.recommendation_score:.1f}/10")
+                lines.append(f"**Confidence:** {proposal.confidence:.0%}")
+                lines.append("")
+
+                lines.append("## Expected Improvement")
+                lines.append(proposal.expected_improvement)
+                lines.append("")
+
+                if proposal.risks:
+                    lines.append("## Risks")
+                    for risk in proposal.risks[:3]:
+                        lines.append(f"• {risk}")
+                    lines.append("")
+
+                if proposal.reasoning_chain:
+                    lines.append("## Reasoning Summary")
+                    for step in proposal.reasoning_chain[:5]:
+                        lines.append(f"• {step.reasoning[:200]}")
+                    lines.append("")
+
+                if can_change:
+                    lines.append(f"**Status:** ✅ Ready to execute (proposal ID: {proposal_id})")
+                    lines.append(f"To approve: `approve_theme_change(proposal_id={proposal_id})`")
+                else:
+                    lines.append(f"**Status:** ❌ Cannot execute - {reason}")
+
+                return "\n".join(lines)
+
+            except Exception as e:
+                logger.exception("evaluate_theme_change failed")
+                return f"Error evaluating theme change: {str(e)}"
+
+        if tool_name == "approve_theme_change":
+            try:
+                from src.utils.config_override_manager import ConfigOverrideManager
+                from src.utils.theme_governance import check_theme_change_governance, record_theme_change
+                from datetime import datetime, timezone
+
+                proposal_id = arguments.get("proposal_id")
+                if not proposal_id:
+                    return "Error: proposal_id is required"
+
+                # Load proposal
+                proposal = bot_instance.storage.get_theme_change_proposal(proposal_id)
+                if not proposal:
+                    return f"Error: Proposal {proposal_id} not found"
+
+                if proposal.get("status") not in ["proposed", None]:
+                    return f"Error: Proposal {proposal_id} already processed (status: {proposal.get('status')})"
+
+                # Check governance
+                can_change, reason = check_theme_change_governance(bot_instance.storage, proposal)
+                if not can_change:
+                    return f"❌ Cannot execute theme change: {reason}"
+
+                # Execute theme change
+                theme_name = proposal.get("theme_name")
+                proposed_symbols = proposal.get("proposed_symbols", [])
+
+                if not theme_name or not proposed_symbols:
+                    return "Error: Invalid proposal data"
+
+                # Update theme underlyings
+                current_underlyings = list(config.theme_underlyings)
+                theme_idx = {"theme_a": 0, "theme_b": 1, "theme_c": 2}.get(theme_name)
+
+                if theme_idx is None or theme_idx >= len(current_underlyings):
+                    return f"Error: Invalid theme {theme_name}"
+
+                current_underlyings[theme_idx] = proposed_symbols[0]
+                new_csv = ",".join(current_underlyings)
+
+                # Save override
+                ConfigOverrideManager.save_override("theme_underlyings_csv", new_csv)
+                config.theme_underlyings_csv = new_csv
+
+                # Update proposal status
+                bot_instance.storage.update_theme_change_proposal(
+                    proposal_id,
+                    status="executed",
+                    executed_at=datetime.now(timezone.utc)
+                )
+
+                # Record cooldown
+                record_theme_change(bot_instance.storage, theme_name)
+
+                logger.info(f"Theme change executed: {theme_name} → {proposed_symbols}")
+
+                return (
+                    f"✅ **Theme change executed!**\n\n"
+                    f"**{theme_name.upper()}:** {proposal.get('current_symbols')} → {proposed_symbols}\n\n"
+                    f"**New theme underlyings:** {new_csv}\n\n"
+                    f"The new allocation will take effect on the next rebalance cycle."
+                )
+
+            except Exception as e:
+                logger.exception("approve_theme_change failed")
+                return f"Error approving theme change: {str(e)}"
+
+        if tool_name == "analyze_portfolio":
+            try:
+                from src.portfolio_analysis_tools import analyze_portfolio, format_portfolio_analysis
+
+                result = analyze_portfolio(bot_instance.portfolio_manager)
+                return format_portfolio_analysis(result)
+            except Exception as e:
+                logger.exception("analyze_portfolio failed")
+                return f"Error analyzing portfolio: {str(e)}"
+
+        if tool_name == "compare_strategies":
+            try:
+                from src.portfolio_analysis_tools import compare_strategies, format_strategy_comparison
+
+                # Get capital: use provided or default to current equity
+                capital = arguments.get("capital")
+                if capital is None:
+                    bot_instance.portfolio_manager.refresh_portfolio()
+                    capital = bot_instance.portfolio_manager.get_equity()
+
+                results = compare_strategies(capital=float(capital), simulations=5000)
+                return format_strategy_comparison(results)
+            except Exception as e:
+                logger.exception("compare_strategies failed")
+                return f"Error comparing strategies: {str(e)}"
+
+        if tool_name == "monte_carlo_returns":
+            try:
+                from src.utils.monte_carlo import monte_carlo_returns as mc_returns
+                from src.utils.strategy_math import StrategyProfile
+                from src.utils.strategy_presets import get_preset
+
+                capital = float(arguments["capital"])
+                risk_fraction = float(arguments["risk_fraction"])
+
+                # Check if using preset or custom strategy
+                preset_name = arguments.get("preset_name")
+                if preset_name:
+                    strategy = get_preset(preset_name)
+                    if not strategy:
+                        return f"Preset '{preset_name}' not found. Available: daily_3pct_grind, high_conviction"
+                else:
+                    # Build custom strategy
+                    strategy = StrategyProfile(
+                        name="Custom Strategy",
+                        win_rate=float(arguments["win_rate"]),
+                        avg_win=float(arguments["avg_win"]),
+                        avg_loss=float(arguments["avg_loss"]),
+                        trades_per_year=int(arguments.get("trades_per_year", 220))
+                    )
+
+                # Run Monte Carlo
+                result = mc_returns(
+                    strategy=strategy,
+                    initial_capital=capital,
+                    risk_fraction=risk_fraction,
+                    simulations=5000
+                )
+
+                # Format results
+                lines = [
+                    f"Monte Carlo Simulation: {strategy.name}",
+                    f"Capital: ${capital:,.0f}",
+                    f"Risk per trade: {risk_fraction*100:.1f}%",
+                    "",
+                    f"Median outcome: ${result['median']:,.0f}",
+                    f"Mean outcome: ${result['mean']:,.0f}",
+                    f"5th percentile: ${result['5pct']:,.0f}",
+                    f"95th percentile: ${result['95pct']:,.0f}",
+                    f"Max drawdown risk (50% loss): {result['max_drawdown_risk']*100:.1f}%",
+                ]
+
+                return "\n".join(lines)
+            except Exception as e:
+                logger.exception("monte_carlo_returns failed")
+                return f"Error running Monte Carlo simulation: {str(e)}"
+
+        if tool_name == "get_smart_hybrid":
+            try:
+                from src.utils.hybrid_allocation import apply_smart_hybrid, format_hybrid_results
+
+                # Get current portfolio value
+                bot_instance.portfolio_manager.refresh_portfolio()
+                portfolio_value = bot_instance.portfolio_manager.get_equity()
+
+                # Get core_pct parameter (default 0.75)
+                core_pct = float(arguments.get("core_pct", 0.75))
+
+                # Run smart hybrid allocation
+                result = apply_smart_hybrid(
+                    portfolio_value=portfolio_value,
+                    core_pct=core_pct,
+                    simulations=5000
+                )
+
+                return format_hybrid_results(result)
+            except Exception as e:
+                logger.exception("get_smart_hybrid failed")
+                return f"Error analyzing smart hybrid allocation: {str(e)}"
+
         return f"Unknown tool: {tool_name}"
     except Exception as e:
         logger.exception("Tool %s failed", tool_name)
@@ -2784,6 +3260,41 @@ async def cmd_loop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Usage: /loop [on|off|status]", parse_mode="HTML")
 
 
+async def cmd_performance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /performance [days]: Quick access to performance analytics.
+
+    Shows P&L by theme, win rate, and execution quality metrics.
+    Wrapper around get_performance_summary tool.
+    """
+    bot_instance: TradingBot = context.bot_data["trading_bot"]
+
+    # Parse optional days argument
+    args = context.args or []
+    days = 30  # default
+
+    if args:
+        try:
+            days = int(args[0])
+            days = min(days, 365)  # Cap at 365
+            days = max(days, 1)    # At least 1 day
+        except (ValueError, IndexError):
+            # Invalid argument, use default
+            pass
+
+    try:
+        # Call existing performance analytics
+        analytics = PerformanceAnalytics(bot_instance.storage)
+        result = analytics.get_performance_summary(days)
+
+        await update.message.reply_text(result, parse_mode="Markdown")
+    except Exception as e:
+        logger.exception("cmd_performance failed")
+        await update.message.reply_text(
+            f"Error retrieving performance summary: {str(e)}",
+            parse_mode="HTML"
+        )
+
+
 async def _trading_loop_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Repeating job: run one trading loop cycle in background and optionally notify when done.
 
@@ -2944,6 +3455,7 @@ def main() -> None:
     app.add_handler(CommandHandler("loop_status", cmd_loop_status))
     app.add_handler(CommandHandler("run_cycle", cmd_run_cycle))
     app.add_handler(CommandHandler("briefing", cmd_briefing))
+    app.add_handler(CommandHandler("performance", cmd_performance))
     app.add_handler(MessageHandler(
         (filters.TEXT | filters.PHOTO | filters.VOICE | filters.VIDEO | filters.VIDEO_NOTE) & ~filters.COMMAND,
         handle_message,

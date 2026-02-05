@@ -148,6 +148,25 @@ class HighConvexityConfig(BaseSettings):
     trading_loop_apply_adjustments: bool = Field(False, env="TRADING_LOOP_APPLY_ADJUSTMENTS")  # If True, apply safe config changes (e.g. reduce moonshot on drawdown)
     trading_loop_include_fundamental: bool = Field(False, env="TRADING_LOOP_INCLUDE_FUNDAMENTAL")  # If True, add one-symbol fundamental snippet to research
 
+    # Deep Research Capabilities
+    trading_loop_deep_research_enabled: bool = Field(False, env="TRADING_LOOP_DEEP_RESEARCH_ENABLED")  # Enable multi-step deep research
+    deep_research_symbols_per_cycle: int = Field(3, env="DEEP_RESEARCH_SYMBOLS_PER_CYCLE")  # Number of symbols to research per cycle
+    deep_research_frequency_hours: int = Field(24, env="DEEP_RESEARCH_FREQUENCY_HOURS")  # Hours between deep research runs (daily = 24)
+
+    # Theme Evaluation & Autonomous Management
+    trading_loop_theme_evaluation_enabled: bool = Field(False, env="TRADING_LOOP_THEME_EVALUATION_ENABLED")  # Enable periodic theme evaluation
+    theme_evaluation_interval_days: int = Field(7, env="THEME_EVALUATION_INTERVAL_DAYS")  # Days between theme evaluations (weekly = 7)
+    theme_change_threshold: float = Field(7.5, env="THEME_CHANGE_THRESHOLD")  # Minimum recommendation score (0-10) to propose theme change
+
+    # Theme Change Governance
+    theme_change_requires_approval: bool = Field(False, env="THEME_CHANGE_REQUIRES_APPROVAL")  # If False, bot can execute theme changes autonomously
+    theme_change_min_confidence: float = Field(0.75, env="THEME_CHANGE_MIN_CONFIDENCE")  # Minimum confidence (0-1) for theme change
+    theme_change_cooldown_days: int = Field(14, env="THEME_CHANGE_COOLDOWN_DAYS")  # Minimum days between theme changes
+
+    # Chain-of-Thought Logging
+    cot_logging_enabled: bool = Field(True, env="COT_LOGGING_ENABLED")  # Enable chain-of-thought logging to database
+    cot_detail_level: str = Field("standard", env="COT_DETAIL_LEVEL")  # minimal, standard, verbose
+
     # Telegram + AI (optional; required when running Telegram bot)
     telegram_bot_token: str = Field("", env="TELEGRAM_BOT_TOKEN")
     openai_api_key: str = Field("", env="OPENAI_API_KEY")

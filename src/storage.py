@@ -147,6 +147,62 @@ class StorageManager:
             )
         """)
 
+        # Research reports (deep research capabilities)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS research_reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                research_type TEXT NOT NULL,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                reasoning_chain TEXT,
+                fundamental_score REAL,
+                technical_score REAL,
+                sentiment_score REAL,
+                overall_score REAL,
+                recommendation TEXT,
+                confidence REAL,
+                key_findings TEXT,
+                risks TEXT,
+                catalysts TEXT,
+                report_json TEXT
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_research_symbol_timestamp ON research_reports(symbol, timestamp DESC)")
+
+        # Theme change proposals (autonomous theme management)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS theme_change_proposals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                theme_name TEXT NOT NULL,
+                current_symbols TEXT,
+                proposed_symbols TEXT,
+                reasoning_chain TEXT,
+                recommendation_score REAL,
+                expected_improvement TEXT,
+                risks TEXT,
+                status TEXT,
+                proposed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                decided_at TIMESTAMP,
+                executed_at TIMESTAMP,
+                outcome TEXT
+            )
+        """)
+
+        # Chain-of-thought logs (structured reasoning)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS chain_of_thought_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                step_number INTEGER NOT NULL,
+                step_name TEXT NOT NULL,
+                reasoning TEXT NOT NULL,
+                data_json TEXT,
+                confidence REAL,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_cot_session ON chain_of_thought_logs(session_id, step_number)")
+
         conn.commit()
         conn.close()
         self._migrate_orders_rationale()
@@ -746,3 +802,336 @@ class StorageManager:
             True if subscribed, False otherwise
         """
         return chat_id in self.get_briefing_subscribers()
+
+    # =====================================
+    # Deep Research & Theme Management
+    # =====================================
+
+    def save_research_report(self, report: Dict[str, Any]) -> int:
+        """Save research report to database.
+
+        Args:
+            report: Research report dictionary with keys:
+                symbol, research_type, reasoning_chain, fundamental_score,
+                technical_score, sentiment_score, overall_score,
+                recommendation, confidence, key_findings, risks, catalysts
+
+        Returns:
+            Report ID
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            INSERT INTO research_reports (
+                symbol, research_type, reasoning_chain, fundamental_score,
+                technical_score, sentiment_score, overall_score, recommendation,
+                confidence, key_findings, risks, catalysts, report_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            report.get("symbol"),
+            report.get("research_type", "deep_symbol"),
+            json.dumps(report.get("reasoning_chain", [])),
+            report.get("fundamental_score"),
+            report.get("technical_score"),
+            report.get("sentiment_score"),
+            report.get("overall_score"),
+            report.get("recommendation"),
+            report.get("confidence"),
+            json.dumps(report.get("key_findings", [])),
+            json.dumps(report.get("risks", [])),
+            json.dumps(report.get("catalysts", [])),
+            json.dumps(report)
+        ))
+
+        report_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+
+        logger.info(f"Saved research report: {report.get('symbol')} (ID: {report_id})")
+        return report_id
+
+    def get_research_report(self, report_id: int) -> Optional[Dict]:
+        """Get research report by ID.
+
+        Args:
+            report_id: Report ID
+
+        Returns:
+            Report dictionary or None
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT * FROM research_reports WHERE id = ?
+        """, (report_id,))
+
+        columns = [desc[0] for desc in cursor.description]
+        row = cursor.fetchone()
+        conn.close()
+
+        if row:
+            report = dict(zip(columns, row))
+            # Parse JSON fields
+            for field in ["reasoning_chain", "key_findings", "risks", "catalysts"]:
+                if report.get(field):
+                    try:
+                        report[field] = json.loads(report[field])
+                    except Exception:
+                        pass
+            return report
+        return None
+
+    def get_recent_research_reports(self, symbol: Optional[str] = None,
+                                   limit: int = 10) -> List[Dict]:
+        """Get recent research reports.
+
+        Args:
+            symbol: Optional symbol to filter by
+            limit: Maximum number of reports to return
+
+        Returns:
+            List of report dictionaries
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        if symbol:
+            cursor.execute("""
+                SELECT * FROM research_reports
+                WHERE symbol = ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+            """, (symbol, limit))
+        else:
+            cursor.execute("""
+                SELECT * FROM research_reports
+                ORDER BY timestamp DESC
+                LIMIT ?
+            """, (limit,))
+
+        columns = [desc[0] for desc in cursor.description]
+        reports = []
+        for row in cursor.fetchall():
+            report = dict(zip(columns, row))
+            # Parse JSON fields
+            for field in ["reasoning_chain", "key_findings", "risks", "catalysts"]:
+                if report.get(field):
+                    try:
+                        report[field] = json.loads(report[field])
+                    except Exception:
+                        pass
+            reports.append(report)
+
+        conn.close()
+        return reports
+
+    def save_theme_change_proposal(self, proposal: Dict[str, Any]) -> int:
+        """Save theme change proposal.
+
+        Args:
+            proposal: Proposal dictionary with keys:
+                theme_name, current_symbols, proposed_symbols, reasoning_chain,
+                recommendation_score, expected_improvement, risks, confidence
+
+        Returns:
+            Proposal ID
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            INSERT INTO theme_change_proposals (
+                theme_name, current_symbols, proposed_symbols, reasoning_chain,
+                recommendation_score, expected_improvement, risks, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            proposal.get("theme_name"),
+            json.dumps(proposal.get("current_symbols", [])),
+            json.dumps(proposal.get("proposed_symbols", [])),
+            json.dumps(proposal.get("reasoning_chain", [])),
+            proposal.get("recommendation_score"),
+            proposal.get("expected_improvement"),
+            json.dumps(proposal.get("risks", [])),
+            proposal.get("status", "proposed")
+        ))
+
+        proposal_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+
+        logger.info(f"Saved theme change proposal: {proposal.get('theme_name')} (ID: {proposal_id})")
+        return proposal_id
+
+    def get_theme_change_proposal(self, proposal_id: int) -> Optional[Dict]:
+        """Get theme change proposal by ID.
+
+        Args:
+            proposal_id: Proposal ID
+
+        Returns:
+            Proposal dictionary or None
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT * FROM theme_change_proposals WHERE id = ?
+        """, (proposal_id,))
+
+        columns = [desc[0] for desc in cursor.description]
+        row = cursor.fetchone()
+        conn.close()
+
+        if row:
+            proposal = dict(zip(columns, row))
+            # Parse JSON fields
+            for field in ["current_symbols", "proposed_symbols", "reasoning_chain", "risks"]:
+                if proposal.get(field):
+                    try:
+                        proposal[field] = json.loads(proposal[field])
+                    except Exception:
+                        pass
+            return proposal
+        return None
+
+    def get_recent_theme_proposals(self, theme_name: Optional[str] = None,
+                                  limit: int = 10) -> List[Dict]:
+        """Get recent theme change proposals.
+
+        Args:
+            theme_name: Optional theme to filter by
+            limit: Maximum number of proposals to return
+
+        Returns:
+            List of proposal dictionaries
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        if theme_name:
+            cursor.execute("""
+                SELECT * FROM theme_change_proposals
+                WHERE theme_name = ?
+                ORDER BY proposed_at DESC
+                LIMIT ?
+            """, (theme_name, limit))
+        else:
+            cursor.execute("""
+                SELECT * FROM theme_change_proposals
+                ORDER BY proposed_at DESC
+                LIMIT ?
+            """, (limit,))
+
+        columns = [desc[0] for desc in cursor.description]
+        proposals = []
+        for row in cursor.fetchall():
+            proposal = dict(zip(columns, row))
+            # Parse JSON fields
+            for field in ["current_symbols", "proposed_symbols", "reasoning_chain", "risks"]:
+                if proposal.get(field):
+                    try:
+                        proposal[field] = json.loads(proposal[field])
+                    except Exception:
+                        pass
+            proposals.append(proposal)
+
+        conn.close()
+        return proposals
+
+    def update_theme_change_proposal(self, proposal_id: int,
+                                    status: str,
+                                    executed_at: Optional[datetime] = None) -> None:
+        """Update theme change proposal status.
+
+        Args:
+            proposal_id: Proposal ID
+            status: New status (proposed, approved, rejected, executed)
+            executed_at: Optional execution timestamp
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        if executed_at:
+            cursor.execute("""
+                UPDATE theme_change_proposals
+                SET status = ?, executed_at = ?, decided_at = ?
+                WHERE id = ?
+            """, (status, executed_at.isoformat(), datetime.now().isoformat(), proposal_id))
+        else:
+            cursor.execute("""
+                UPDATE theme_change_proposals
+                SET status = ?, decided_at = ?
+                WHERE id = ?
+            """, (status, datetime.now().isoformat(), proposal_id))
+
+        conn.commit()
+        conn.close()
+        logger.info(f"Updated theme change proposal {proposal_id}: status={status}")
+
+    def log_chain_of_thought(self, session_id: str, step_number: int,
+                           step_name: str, reasoning: str,
+                           data: Optional[Dict] = None,
+                           confidence: Optional[float] = None) -> None:
+        """Log a chain-of-thought reasoning step.
+
+        Args:
+            session_id: Session ID (groups related steps)
+            step_number: Step number in sequence
+            step_name: Name of this step
+            reasoning: Human-readable reasoning text
+            data: Optional supporting data dictionary
+            confidence: Optional confidence score (0-1)
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            INSERT INTO chain_of_thought_logs (
+                session_id, step_number, step_name, reasoning, data_json, confidence
+            ) VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            session_id,
+            step_number,
+            step_name,
+            reasoning,
+            json.dumps(data) if data else None,
+            confidence
+        ))
+
+        conn.commit()
+        conn.close()
+
+    def get_chain_of_thought(self, session_id: str) -> List[Dict]:
+        """Get all chain-of-thought steps for a session.
+
+        Args:
+            session_id: Session ID
+
+        Returns:
+            List of step dictionaries ordered by step_number
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT * FROM chain_of_thought_logs
+            WHERE session_id = ?
+            ORDER BY step_number ASC
+        """, (session_id,))
+
+        columns = [desc[0] for desc in cursor.description]
+        steps = []
+        for row in cursor.fetchall():
+            step = dict(zip(columns, row))
+            # Parse data_json
+            if step.get("data_json"):
+                try:
+                    step["data"] = json.loads(step["data_json"])
+                except Exception:
+                    pass
+            steps.append(step)
+
+        conn.close()
+        return steps

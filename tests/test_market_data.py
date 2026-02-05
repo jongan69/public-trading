@@ -90,7 +90,7 @@ def test_get_option_chain(market_data_manager, mock_client):
 
 
 def test_get_option_greeks_single(market_data_manager, mock_client):
-    """Test getting Greeks for single option."""
+    """Test getting Greeks for single option (comprehensive serializer returns delta, etc.)."""
     class MockGreek:
         def __init__(self):
             self.greeks = Mock()
@@ -99,7 +99,9 @@ def test_get_option_greeks_single(market_data_manager, mock_client):
             self.greeks.theta = -0.05
             self.greeks.vega = 0.2
     
-    mock_client.client.get_option_greek.return_value = MockGreek()
+    mock_response = MockGreek()
+    mock_response.osi_symbol = "AAPL250117C00150000"
+    mock_client.client.get_option_greek.return_value = mock_response
     
     greeks = market_data_manager.get_option_greeks(["AAPL250117C00150000"])
     
@@ -172,3 +174,55 @@ def test_compute_max_pain_no_oi_returns_none():
     chain.puts = [Contract(90)]
     result = MarketDataManager.compute_max_pain(chain)
     assert result is None
+
+
+def test_get_quotes_comprehensive(market_data_manager, mock_client):
+    """Test get_quotes_comprehensive returns dict of full quote data per symbol."""
+    class MockQuote:
+        def __init__(self, symbol, last, bid, ask):
+            self.instrument = Mock()
+            self.instrument.symbol = symbol
+            self.last = last
+            self.bid = bid
+            self.ask = ask
+
+    mock_client.client.get_quotes.return_value = [
+        MockQuote("AAPL", 150.0, 149.9, 150.1),
+        MockQuote("MSFT", 400.0, 399.5, 400.5),
+    ]
+
+    result = market_data_manager.get_quotes_comprehensive(["AAPL", "MSFT"])
+
+    assert "AAPL" in result
+    assert "MSFT" in result
+    assert result["AAPL"].get("last") == 150.0
+    assert result["AAPL"].get("symbol") == "AAPL"
+    assert result["MSFT"].get("last") == 400.0
+    assert market_data_manager._quote_cache.get("AAPL") == 150.0
+
+
+def test_get_option_chain_comprehensive(market_data_manager, mock_client):
+    """Test get_option_chain_comprehensive returns dict with calls, puts, max_pain."""
+    mock_chain = Mock(spec=OptionChainResponse)
+    mock_chain.calls = []
+    mock_chain.puts = []
+    mock_client.client.get_option_chain.return_value = mock_chain
+
+    with patch.object(MarketDataManager, "compute_max_pain", return_value=(100.0, 0.0)):
+        with patch("src.market_data.extract_option_chain_data") as extract:
+            extract.return_value = {
+                "underlying": "AAPL",
+                "expiration": "2025-01-17",
+                "spot_price": 150.0,
+                "calls": [{"symbol": "AAPL250117C00150000", "strike": 150.0}],
+                "puts": [],
+            }
+            result = market_data_manager.get_option_chain_comprehensive(
+                "AAPL", date(2025, 1, 17)
+            )
+
+    assert result is not None
+    assert result.get("spot_price") == 150.0
+    assert result.get("max_pain_strike") == 100.0
+    assert len(result.get("calls", [])) == 1
+    assert result["calls"][0]["symbol"] == "AAPL250117C00150000"

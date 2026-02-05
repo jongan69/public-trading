@@ -197,6 +197,180 @@ def run_research(bot: Any) -> Dict[str, Any]:
             except Exception as e:
                 logger.debug(f"Loop fundamental for {sym}: {e}")
 
+    # Deep Research (if enabled and due)
+    theme_reports = []
+    if getattr(config, "trading_loop_deep_research_enabled", False):
+        try:
+            from src.research_engine import ResearchEngine
+
+            # Check if deep research is due (based on frequency)
+            last_research_ts = bot.storage.get_bot_state("trading_loop_last_deep_research_at")
+            now_ts = datetime.now(timezone.utc)
+            run_deep_research = True
+
+            if last_research_ts:
+                try:
+                    last = datetime.fromisoformat(last_research_ts.replace("Z", "+00:00"))
+                    hours_since = (now_ts - last).total_seconds() / 3600
+                    run_deep_research = hours_since >= getattr(config, "deep_research_frequency_hours", 24)
+                except Exception as e:
+                    logger.debug(f"Could not parse last deep research timestamp: {e}")
+
+            if run_deep_research:
+                logger.info("Running deep research on theme symbols")
+                research_engine = ResearchEngine(bot)
+
+                # Research top N theme symbols
+                symbols_to_research = config.theme_underlyings[:getattr(config, "deep_research_symbols_per_cycle", 3)]
+
+                for symbol in symbols_to_research:
+                    try:
+                        report = research_engine.deep_research_symbol(symbol)
+                        theme_reports.append(report)
+
+                        # Store in database
+                        bot.storage.save_research_report(report.to_dict())
+
+                        logger.info(
+                            f"Deep research {symbol}: score={report.overall_score:.1f}/10 "
+                            f"recommendation={report.recommendation} confidence={report.confidence:.0%}"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Deep research failed for {symbol}: {e}")
+
+                # Update last research timestamp
+                bot.storage.set_bot_state("trading_loop_last_deep_research_at", now_ts.isoformat())
+
+                # Add to summary
+                if theme_reports:
+                    summary_parts.append("\nDeep Research Results:")
+                    for report in theme_reports:
+                        summary_parts.append(
+                            f"  {report.symbol}: {report.overall_score:.1f}/10 - "
+                            f"{report.recommendation} (confidence {report.confidence:.0%})"
+                        )
+
+        except Exception as e:
+            logger.warning(f"Deep research error: {e}")
+
+    # Theme Evaluation (if enabled and due)
+    theme_proposal = None
+    if getattr(config, "trading_loop_theme_evaluation_enabled", False):
+        try:
+            from src.research_engine import ResearchEngine
+
+            # Check if theme evaluation is due (based on interval)
+            last_eval_ts = bot.storage.get_bot_state("last_theme_evaluation_at")
+            now_ts = datetime.now(timezone.utc)
+            run_evaluation = True
+
+            if last_eval_ts:
+                try:
+                    last = datetime.fromisoformat(last_eval_ts.replace("Z", "+00:00"))
+                    days_since = (now_ts - last).days
+                    run_evaluation = days_since >= getattr(config, "theme_evaluation_interval_days", 7)
+                except Exception as e:
+                    logger.debug(f"Could not parse last theme evaluation timestamp: {e}")
+
+            if run_evaluation:
+                logger.info("Running theme evaluation")
+                research_engine = ResearchEngine(bot)
+
+                # Evaluate themes (for now, just evaluate theme_a as an example)
+                # In production, you might evaluate all themes
+                for theme_name in ["theme_a", "theme_b", "theme_c"]:
+                    try:
+                        evaluation = research_engine.theme_evaluation(theme_name)
+
+                        if evaluation and evaluation.should_change:
+                            logger.info(f"Theme {theme_name} may need change (score: {evaluation.current_performance_score:.1f}/10)")
+
+                            # Generate theme change proposal using smart alternatives
+                            current_symbols = evaluation.current_symbols
+
+                            # Get best alternative from evaluation (already researched)
+                            if evaluation.alternative_candidates:
+                                # Sort by score and take top candidate
+                                sorted_candidates = sorted(
+                                    evaluation.alternative_candidates,
+                                    key=lambda x: x.get("score", 0),
+                                    reverse=True
+                                )
+                                candidate_symbols = [sorted_candidates[0]["symbol"]]
+
+                                logger.info(
+                                    f"Using smart alternative for {theme_name}: "
+                                    f"{candidate_symbols[0]} (score {sorted_candidates[0]['score']:.1f}/10)"
+                                )
+                            else:
+                                # Fallback to SPY if no alternatives found
+                                candidate_symbols = ["SPY"]
+                                logger.warning(f"No alternatives found for {theme_name}, using SPY as fallback")
+
+                            proposal = research_engine.research_theme_change(current_symbols, candidate_symbols)
+
+                                if proposal and proposal.recommendation_score >= config.theme_change_threshold:
+                                    proposal.theme_name = theme_name
+                                    theme_proposal = proposal
+
+                                    # Store proposal
+                                    proposal_id = bot.storage.save_theme_change_proposal(proposal.to_dict())
+
+                                    logger.info(
+                                        f"Theme change proposed: {theme_name} "
+                                        f"{current_symbols} → {candidate_symbols} "
+                                        f"(score={proposal.recommendation_score:.1f}/10, ID={proposal_id})"
+                                    )
+
+                                    # Add to summary
+                                    summary_parts.append(
+                                        f"\nTheme Change Proposal (ID {proposal_id}): "
+                                        f"{theme_name} {proposal.current_symbols} → {proposal.proposed_symbols} "
+                                        f"(score {proposal.recommendation_score:.1f}/10, confidence {proposal.confidence:.0%})"
+                                    )
+
+                                    # Check if can execute autonomously
+                                    from src.utils.theme_governance import check_theme_change_governance
+                                    can_execute, reason = check_theme_change_governance(bot.storage, proposal.to_dict())
+
+                                    if can_execute and not config.theme_change_requires_approval:
+                                        # Execute theme change autonomously
+                                        from src.utils.config_override_manager import ConfigOverrideManager
+
+                                        # Update theme underlyings
+                                        current_underlyings = list(config.theme_underlyings)
+                                        theme_idx = {"theme_a": 0, "theme_b": 1, "theme_c": 2}[theme_name]
+                                        current_underlyings[theme_idx] = proposal.proposed_symbols[0]
+                                        new_csv = ",".join(current_underlyings)
+
+                                        ConfigOverrideManager.save_override("theme_underlyings_csv", new_csv)
+                                        config.theme_underlyings_csv = new_csv
+
+                                        # Update proposal status
+                                        bot.storage.update_theme_change_proposal(
+                                            proposal_id,
+                                            status="executed",
+                                            executed_at=datetime.now(timezone.utc)
+                                        )
+
+                                        # Record cooldown
+                                        from src.utils.theme_governance import record_theme_change
+                                        record_theme_change(bot.storage, theme_name)
+
+                                        logger.info(f"Theme change executed autonomously: {theme_name} → {proposal.proposed_symbols}")
+                                        summary_parts.append(f"  ✓ Theme change EXECUTED autonomously")
+                                    else:
+                                        summary_parts.append(f"  ⏸ Awaiting approval (reason: {reason})")
+
+                    except Exception as e:
+                        logger.warning(f"Theme evaluation failed for {theme_name}: {e}")
+
+                # Update last evaluation timestamp
+                bot.storage.set_bot_state("last_theme_evaluation_at", now_ts.isoformat())
+
+        except Exception as e:
+            logger.warning(f"Theme evaluation error: {e}")
+
     research_summary = "\n".join(summary_parts)
     ideas = (
         "Consider rebalance if allocations deviate from targets. "

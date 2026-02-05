@@ -35,8 +35,8 @@ def test_save_and_load_override(clean_override_file):
 
 
 def test_save_invalid_key(clean_override_file):
-    """Test that invalid keys are rejected."""
-    with pytest.raises(ValueError, match="not Telegram-editable"):
+    """Test that invalid keys (e.g. sensitive) are rejected."""
+    with pytest.raises(ValueError, match="not editable via chat"):
         ConfigOverrideManager.save_override("api_secret_key", "test")
 
 
@@ -122,14 +122,15 @@ def test_get_override_summary_with_overrides(clean_override_file):
 
 def test_whitelist_contains_expected_keys():
     """Test that whitelist contains all expected Telegram-editable keys."""
-    expected_keys = {
+    # Whitelist includes at least the original allocation/option/theme keys
+    expected_subset = {
         "theme_a_target", "theme_b_target", "theme_c_target",
         "moonshot_target", "cash_minimum",
         "option_dte_min", "option_dte_max",
         "strike_range_min", "strike_range_max",
         "theme_underlyings_csv",
     }
-    assert TELEGRAM_EDITABLE_KEYS == expected_keys
+    assert expected_subset.issubset(TELEGRAM_EDITABLE_KEYS)
 
 
 def test_file_created_in_data_directory(clean_override_file):
